@@ -1,10 +1,9 @@
-version: '3.8'
-
 services:
   node1:
     build: .
     volumes:
       - .:/app
+      - ./data_shards/node1:/app/data
     environment:
       - NODE_ID=1
       - NEIGHBORS=node2,node3,node4,node5
@@ -13,6 +12,7 @@ services:
     build: .
     volumes:
       - .:/app
+      - ./data_shards/node2:/app/data
     environment:
       - NODE_ID=2
       - NEIGHBORS=node1,node3,node4,node5
@@ -21,6 +21,7 @@ services:
     build: .
     volumes:
       - .:/app
+      - ./data_shards/node3:/app/data
     environment:
       - NODE_ID=3
       - NEIGHBORS=node1,node2,node4,node5
@@ -29,6 +30,7 @@ services:
     build: .
     volumes:
       - .:/app
+      - ./data_shards/node4:/app/data
     environment:
       - NODE_ID=4
       - NEIGHBORS=node1,node2,node3,node5
@@ -37,6 +39,7 @@ services:
     build: .
     volumes:
       - .:/app
+      - ./data_shards/node5:/app/data
     environment:
       - NODE_ID=5
       - NEIGHBORS=node1,node2,node3,node4
