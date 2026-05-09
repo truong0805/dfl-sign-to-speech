@@ -2,31 +2,39 @@ import os
 import time
 import grpc
 import random
+import json
 import numpy as np
 from concurrent import futures
+
+from model import build_model
+from train import train_local_model
 import dfl_service_pb2
 import dfl_service_pb2_grpc
-import json
+from aggregator import federated_average
 
 class DFLServicer(dfl_service_pb2_grpc.DFLServiceServicer):
-    def __init__(self):
-        self.received_updates = [] # Buffer to hold weights from neighbors
+    def __init__(self, node_id, sample_count):
+        self.node_id = node_id
+        self.sample_count = sample_count
+        self.received_updates = [] # Buffer for neighbor weights
 
     def GossipWeights(self, request, context):
-        # Deserialization
+        # Deserialization: NumPy from bytes
         weights = np.frombuffer(request.model_data, dtype=np.float32)
 
+        print(f">>> [SERVER] Node {self.node_id} received weights from Node {request.node_id} (n={request.sample_count})", flush=True)
+
+        # Store for Federated Averaging
         self.received_updates.append({
-            "node_id": request.node_id,
             "weights": weights,
-            "sample_count": request.sample_count # You'll need to add this to your .proto!
+            "sample_count": request.sample_count
         })
 
-        # Trigger aggregation if we have enough neighbors (e.g., 2 neighbors)
+        # Trigger aggregation if we have enough neighbors
         if len(self.received_updates) >= 2:
-            print(">>> [SYSTEM] Sufficient updates received. Triggering FedAvg...")
-            self.received_updates = [] # Clear the buffer so you don't re-trigger too fast
-            # Here is where you will call aggregator.federated_average()
+            print(f">>> [SYSTEM] Node {self.node_id} triggering FedAvg aggregation...", flush=True)
+            # Logic to merge weights goes here in Week 2/3
+            self.received_updates = [] # Clear buffer after use
 
         return dfl_service_pb2.WeightResponse(success=True)
 
@@ -35,44 +43,48 @@ def serve():
     neighbors_env = os.getenv('NEIGHBORS', "")
     neighbors = [n.strip() for n in neighbors_env.split(',') if n.strip()]
 
-    # 1. Start the Server (The "Ear")
+    # 1. Load Local Metadata (The n value for FedAvg)
+    try:
+        with open('/app/data/metadata.json', 'r') as f:
+            meta = json.load(f)
+            sample_count = meta['sample_count']
+    except:
+        sample_count = 1 # Fallback
+
+    # 2. Start the Server
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-    dfl_service_pb2_grpc.add_DFLServiceServicer_to_server(DFLServicer(), server)
+    servicer = DFLServicer(node_id, sample_count)
+    dfl_service_pb2_grpc.add_DFLServiceServicer_to_server(servicer, server)
     server.add_insecure_port('[::]:50051')
     server.start()
-    print(f"--- Node {node_id} online, neighbors: {neighbors} ---", flush=True)
+    print(f"--- Node {node_id} online (n={sample_count}) ---", flush=True)
 
-    # 2. Client Loop (The "Mouth")
+    # 3. Training & Gossip Loop
     while True:
+        print(f"--- Node {node_id} starting local training round... ---", flush=True)
+        # Call Danh's training function on the local data shard
+        local_weights = train_local_model()
+
         if neighbors:
-            target = random.choice(neighbors) # P2P Gossip logic
+            target = random.choice(neighbors)
             try:
                 with grpc.insecure_channel(f'{target}:50051') as channel:
                     stub = dfl_service_pb2_grpc.DFLServiceStub(channel)
 
-                    # Create dummy NumPy weights
-                    dummy_weights = np.random.rand(10).astype(np.float32)
+                    # Flatten weights for gRPC transport
+                    flattened_weights = np.concatenate([w.flatten() for w in local_weights]).astype(np.float32)
 
                     response = stub.GossipWeights(dfl_service_pb2.WeightRequest(
                         node_id=int(node_id),
-                        model_data=dummy_weights.tobytes() # Serialize to bytes
+                        model_data=flattened_weights.tobytes(),
+                        sample_count=sample_count
                     ))
                     if response.success:
-                        print(f"[CLIENT] Node {node_id} successfully gossiped to {target}", flush=True)
-            except Exception:
-                print(f"[CLIENT] Node {node_id} couldn't reach {target}. Retrying...", flush=True)
+                        print(f"[CLIENT] Node {node_id} gossiped real weights to {target}", flush=True)
+            except Exception as e:
+                print(f"[CLIENT] Node {node_id} couldn't reach {target}: {e}", flush=True)
 
-        time.sleep(10)
+        time.sleep(30) # Wait between rounds
 
 if __name__ == '__main__':
     serve()
-
-def get_local_metadata():
-    try:
-        # This path matches the volume mount we set in docker-compose
-        with open('/app/data/metadata.json', 'r') as f:
-            data = json.load(f)
-            return data['sample_count']
-    except Exception as e:
-        print(f"Error loading metadata: {e}")
-        return 1 # Default to 1 to avoid division by zero

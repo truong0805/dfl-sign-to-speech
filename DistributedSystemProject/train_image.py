@@ -9,7 +9,7 @@ datagen = ImageDataGenerator(
 )
 
 train_data = datagen.flow_from_directory(
-    'D:/Python/data/image_dataset',   # 🔥 KHÔNG có /train
+    '/app/data_shards',   # 🔥 KHÔNG có /train
     target_size=(64, 64),
     batch_size=32,
     class_mode='categorical',
@@ -17,7 +17,7 @@ train_data = datagen.flow_from_directory(
 )
 
 test_data = datagen.flow_from_directory(
-    'D:/Python/data/image_dataset',
+    '/app/data_shards',
     target_size=(64, 64),
     batch_size=32,
     class_mode='categorical',
