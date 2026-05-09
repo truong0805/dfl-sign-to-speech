@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x11\x64\x66l_service.proto\x12\x03\x64\x66l\"4\n\rWeightRequest\x12\x0f\n\x07node_id\x18\x01 \x01(\x05\x12\x12\n\nmodel_data\x18\x02 \x01(\x0c\"!\n\x0eWeightResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x32\x46\n\nDFLService\x12\x38\n\rGossipWeights\x12\x12.dfl.WeightRequest\x1a\x13.dfl.WeightResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x11\x64\x66l_service.proto\x12\x03\x64\x66l\"J\n\rWeightRequest\x12\x0f\n\x07node_id\x18\x01 \x01(\x05\x12\x12\n\nmodel_data\x18\x02 \x01(\x0c\x12\x14\n\x0csample_count\x18\x03 \x01(\x05\"!\n\x0eWeightResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x32\x46\n\nDFLService\x12\x38\n\rGossipWeights\x12\x12.dfl.WeightRequest\x1a\x13.dfl.WeightResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -32,9 +32,9 @@ _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'dfl_service_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
   _globals['_WEIGHTREQUEST']._serialized_start=26
-  _globals['_WEIGHTREQUEST']._serialized_end=78
-  _globals['_WEIGHTRESPONSE']._serialized_start=80
-  _globals['_WEIGHTRESPONSE']._serialized_end=113
-  _globals['_DFLSERVICE']._serialized_start=115
-  _globals['_DFLSERVICE']._serialized_end=185
+  _globals['_WEIGHTREQUEST']._serialized_end=100
+  _globals['_WEIGHTRESPONSE']._serialized_start=102
+  _globals['_WEIGHTRESPONSE']._serialized_end=135
+  _globals['_DFLSERVICE']._serialized_start=137
+  _globals['_DFLSERVICE']._serialized_end=207
 # @@protoc_insertion_point(module_scope)

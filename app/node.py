@@ -6,13 +6,27 @@ import numpy as np
 from concurrent import futures
 import dfl_service_pb2
 import dfl_service_pb2_grpc
+import json
 
 class DFLServicer(dfl_service_pb2_grpc.DFLServiceServicer):
-    def GossipWeights(self, request, context):
-        received_weights = np.frombuffer(request.model_data, dtype=np.float32) # turn the raw bytes received over the network back into a usable NumPy array
+    def __init__(self):
+        self.received_updates = [] # Buffer to hold weights from neighbors
 
-        print(f">>> [SERVER] Node {os.getenv('NODE_ID')} received weights from Node {request.node_id}", flush=True)
-        print(f"--- Received Sample: {received_weights[:3]}...", flush=True)
+    def GossipWeights(self, request, context):
+        # Deserialization
+        weights = np.frombuffer(request.model_data, dtype=np.float32)
+
+        self.received_updates.append({
+            "node_id": request.node_id,
+            "weights": weights,
+            "sample_count": request.sample_count # You'll need to add this to your .proto!
+        })
+
+        # Trigger aggregation if we have enough neighbors (e.g., 2 neighbors)
+        if len(self.received_updates) >= 2:
+            print(">>> [SYSTEM] Sufficient updates received. Triggering FedAvg...")
+            self.received_updates = [] # Clear the buffer so you don't re-trigger too fast
+            # Here is where you will call aggregator.federated_average()
 
         return dfl_service_pb2.WeightResponse(success=True)
 
@@ -52,3 +66,13 @@ def serve():
 
 if __name__ == '__main__':
     serve()
+
+def get_local_metadata():
+    try:
+        # This path matches the volume mount we set in docker-compose
+        with open('/app/data/metadata.json', 'r') as f:
+            data = json.load(f)
+            return data['sample_count']
+    except Exception as e:
+        print(f"Error loading metadata: {e}")
+        return 1 # Default to 1 to avoid division by zero
