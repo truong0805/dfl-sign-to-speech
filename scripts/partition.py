@@ -62,5 +62,5 @@ def create_shards(source_dir, output_root, num_nodes=5, shards_per_class=10, sha
 
 if __name__ == "__main__":
     # SOURCE_DIR IS YOUR PATH TO THE DATASET
-    create_shards(source_dir='dfl-sign-to-speech\resized_dataset', output_root='data_shards')
+    create_shards(source_dir='resized_dataset', output_root='data_shards')
     print("Partitioning complete. 5 Non-IID nodes created with metadata.json.")

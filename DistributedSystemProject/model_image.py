@@ -1,6 +1,6 @@
 from tensorflow.keras import layers, models
 
-def build_model(input_shape=(64, 64, 3), num_classes=36):
+def build_model(input_shape=(128, 128, 3), num_classes=36):
     model = models.Sequential([
         layers.Input(shape=input_shape),
 

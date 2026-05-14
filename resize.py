@@ -26,5 +26,6 @@ def resize_dataset(input_dir, output_dir, size=(128, 128)):
             except Exception as e:
                 print(f"Skipping {img_name}: {e}")
 
-# Example
-resize_dataset("D:/project-DFL/asl_dataset", "resized_dataset", size=(128, 128))
+if __name__ == "__main__":
+    INPUT_DIR = os.environ.get("ASL_DATASET_DIR", "asl_dataset")
+    resize_dataset(INPUT_DIR, "resized_dataset", size=(128, 128))

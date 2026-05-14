@@ -15,4 +15,6 @@ COPY . .
 # Default port for gRPC
 EXPOSE 50051
 
+ENV PYTHONPATH=/app/app
+
 CMD ["python", "app/node.py"]

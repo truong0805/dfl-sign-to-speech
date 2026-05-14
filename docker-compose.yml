@@ -7,6 +7,9 @@ services:
     environment:
       - NODE_ID=1
       - NEIGHBORS=node2,node3,node4,node5
+      - LOCAL_EPOCHS=3
+      - GOSSIP_INTERVAL=30
+      - MAX_ROUNDS=10
 
   node2:
     build: .
@@ -16,6 +19,9 @@ services:
     environment:
       - NODE_ID=2
       - NEIGHBORS=node1,node3,node4,node5
+      - LOCAL_EPOCHS=3
+      - GOSSIP_INTERVAL=30
+      - MAX_ROUNDS=10
 
   node3:
     build: .
@@ -25,6 +31,9 @@ services:
     environment:
       - NODE_ID=3
       - NEIGHBORS=node1,node2,node4,node5
+      - LOCAL_EPOCHS=3
+      - GOSSIP_INTERVAL=30
+      - MAX_ROUNDS=10
 
   node4:
     build: .
@@ -34,6 +43,9 @@ services:
     environment:
       - NODE_ID=4
       - NEIGHBORS=node1,node2,node3,node5
+      - LOCAL_EPOCHS=3
+      - GOSSIP_INTERVAL=30
+      - MAX_ROUNDS=10
 
   node5:
     build: .
@@ -43,3 +55,6 @@ services:
     environment:
       - NODE_ID=5
       - NEIGHBORS=node1,node2,node3,node4
+      - LOCAL_EPOCHS=3
+      - GOSSIP_INTERVAL=30
+      - MAX_ROUNDS=10
