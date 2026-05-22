@@ -4,57 +4,68 @@ services:
     volumes:
       - .:/app
       - ./data_shards/node1:/app/data
+      - ./checkpoints/node1:/app/checkpoints/node1
+      - ./exported_models:/app/exported_models
     environment:
       - NODE_ID=1
       - NEIGHBORS=node2,node3,node4,node5
-      - LOCAL_EPOCHS=3
+      - LOCAL_EPOCHS=1
       - GOSSIP_INTERVAL=30
       - MAX_ROUNDS=10
-
+      - NUM_CLASSES=26
   node2:
     build: .
     volumes:
       - .:/app
       - ./data_shards/node2:/app/data
+      - ./checkpoints/node2:/app/checkpoints/node2
+      - ./exported_models:/app/exported_models
     environment:
       - NODE_ID=2
       - NEIGHBORS=node1,node3,node4,node5
-      - LOCAL_EPOCHS=3
+      - LOCAL_EPOCHS=1
       - GOSSIP_INTERVAL=30
       - MAX_ROUNDS=10
-
+      - NUM_CLASSES=26
   node3:
     build: .
     volumes:
       - .:/app
       - ./data_shards/node3:/app/data
+      - ./checkpoints/node3:/app/checkpoints/node3
+      - ./exported_models:/app/exported_models
     environment:
       - NODE_ID=3
       - NEIGHBORS=node1,node2,node4,node5
-      - LOCAL_EPOCHS=3
+      - LOCAL_EPOCHS=1
       - GOSSIP_INTERVAL=30
       - MAX_ROUNDS=10
-
+      - NUM_CLASSES=26
   node4:
     build: .
     volumes:
       - .:/app
       - ./data_shards/node4:/app/data
+      - ./checkpoints/node4:/app/checkpoints/node4
+      - ./exported_models:/app/exported_models
     environment:
       - NODE_ID=4
       - NEIGHBORS=node1,node2,node3,node5
-      - LOCAL_EPOCHS=3
+      - LOCAL_EPOCHS=1
       - GOSSIP_INTERVAL=30
       - MAX_ROUNDS=10
-
+      - NUM_CLASSES=26
   node5:
     build: .
     volumes:
       - .:/app
       - ./data_shards/node5:/app/data
+      - ./checkpoints/node5:/app/checkpoints/node5
+      - ./exported_models:/app/exported_models
     environment:
       - NODE_ID=5
       - NEIGHBORS=node1,node2,node3,node4
-      - LOCAL_EPOCHS=3
+      - LOCAL_EPOCHS=1
       - GOSSIP_INTERVAL=30
       - MAX_ROUNDS=10
+      - NUM_CLASSES=26
