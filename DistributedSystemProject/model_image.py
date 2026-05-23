@@ -2,7 +2,7 @@ from tensorflow.keras import layers, models
 from tensorflow.keras.applications import MobileNetV2
 from tensorflow.keras.optimizers import Adam
 
-def build_model(input_shape=(128, 128, 3), num_classes=36):
+def build_model(input_shape=(128, 128, 3), num_classes=26):
     # Load MobileNetV2 pretrained on ImageNet, without the top classifier
     base_model = MobileNetV2(
         input_shape=input_shape,

@@ -10,7 +10,7 @@ from model_image import build_model as _build_image_model
 MODEL_TYPE = os.environ.get("MODEL_TYPE", "image")
 
 
-def build_model(num_classes=36):
+def build_model(num_classes=26):
     if MODEL_TYPE == "mnist":
         from model_mnist import build_model as _build_mnist_model
         return _build_mnist_model()
