@@ -63,16 +63,21 @@ def export_model(model, round_history, train_data):
     model.save(model_path)
     print(f"[Node {NODE_ID}] Model exported to {model_path}", flush=True)
 
-    # Save class mapping so inference knows which index = which letter
-    class_indices = train_data.class_indices  # e.g. {'A': 0, 'B': 1, ...}
-    label_map = {v: k for k, v in class_indices.items()}  # flip to {0: 'A', 1: 'B', ...}
+    # BUG FIX: Always use a canonical A-Z label map (indices 0-25).
+    # Previously this was derived from train_data.class_indices, which skips
+    # any empty local folders (e.g. node1 has no R images, so Keras maps
+    # index 17 → S, 18 → T, etc., while the JSON still claims 17 → R).
+    # The aggregated model's output layer always uses all 26 classes (set
+    # at build time via NUM_CLASSES=26), so the map must match that fixed
+    # ordering: 0=A, 1=B, ..., 25=Z.
+    label_map = {i: chr(ord('A') + i) for i in range(NUM_CLASSES)}
     map_path = os.path.join(EXPORT_DIR, f"node{NODE_ID}_class_map.json")
     with open(map_path, "w") as f:
         json.dump(label_map, f, indent=4)
     print(f"[Node {NODE_ID}] Class map exported to {map_path}", flush=True)
 
     # Save training summary
-    if round_history:
+    if round_history:  # noqa: SIM102
         best = max(round_history, key=lambda x: x[2])
         summary = {
             "node_id":        NODE_ID,
@@ -192,11 +197,14 @@ buffer_lock = threading.Lock()
 class DFLServicer(dfl_service_pb2_grpc.DFLServiceServicer):
     def GossipWeights(self, request, context):
         flat = np.frombuffer(request.model_data, dtype=np.float32).copy()
+        # BUG FIX: use sender's sample_count for correct FedAvg weighting.
+        # Previously local_n (our own count) was stored for every peer.
+        peer_sample_count = request.sample_count if request.sample_count > 0 else 1
         with buffer_lock:
-            received_buffer.append((flat, local_n))
+            received_buffer.append((flat, peer_sample_count))
         print(
             f"[Node {NODE_ID}] Received weights from Node {request.node_id} "
-            f"({len(flat)} params). Buffer size: {len(received_buffer)}",
+            f"({len(flat)} params, {peer_sample_count} samples). Buffer size: {len(received_buffer)}",
             flush=True,
         )
         return dfl_service_pb2.WeightResponse(success=True)
@@ -265,26 +273,29 @@ def serve():
         # Step 3: Save checkpoint after every round
         save_checkpoint(model, round_num, round_history)
 
-        # Step 4: Gossip to a random neighbor
+        # Step 4: Gossip to ALL neighbors so knowledge spreads every round.
+        # BUG FIX: previously only one random neighbor was chosen per round,
+        # causing slow/uneven propagation of letters unique to other nodes.
         if NEIGHBORS:
-            target = random.choice(NEIGHBORS)
-            try:
-                with grpc.insecure_channel(f"{target}:50051", options=grpc_options) as channel:
-                    stub = dfl_service_pb2_grpc.DFLServiceStub(channel)
-                    payload = serialize_weights(model)
-                    response = stub.GossipWeights(
-                        dfl_service_pb2.WeightRequest(
-                            node_id=NODE_ID,
-                            model_data=payload,
+            payload = serialize_weights(model)
+            for target in NEIGHBORS:
+                try:
+                    with grpc.insecure_channel(f"{target}:50051", options=grpc_options) as channel:
+                        stub = dfl_service_pb2_grpc.DFLServiceStub(channel)
+                        response = stub.GossipWeights(
+                            dfl_service_pb2.WeightRequest(
+                                node_id=NODE_ID,
+                                model_data=payload,
+                                sample_count=local_n,
+                            )
                         )
-                    )
-                    if response.success:
-                        print(
-                            f"[Node {NODE_ID}] Round {round_num}: Gossiped to {target} ({len(payload)} bytes).",
-                            flush=True,
-                        )
-            except Exception as e:
-                print(f"[Node {NODE_ID}] Could not reach {target}: {e}", flush=True)
+                        if response.success:
+                            print(
+                                f"[Node {NODE_ID}] Round {round_num}: Gossiped to {target} ({len(payload)} bytes).",
+                                flush=True,
+                            )
+                except Exception as e:
+                    print(f"[Node {NODE_ID}] Could not reach {target}: {e}", flush=True)
 
         # Stop when MAX_ROUNDS reached
         if MAX_ROUNDS and round_num >= MAX_ROUNDS:

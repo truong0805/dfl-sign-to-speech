@@ -10,6 +10,7 @@ service DFLService {
 message WeightRequest {
   int32 node_id = 1;
   bytes model_data = 2; // This will hold the PyTorch weights (serialized NumPy array)
+  int32 sample_count = 3;
 }
 
 message WeightResponse {

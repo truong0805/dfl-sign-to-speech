@@ -12,7 +12,7 @@ import pyttsx3
 def get_tts_engine():
     """Initialize the Text-to-Speech engine safely."""
     engine = pyttsx3.init()
-    engine.setProperty('rate', 150) # Set a comfortable speech pace
+    engine.setProperty('rate', 150)
     return engine
 
 engine = get_tts_engine()
@@ -30,8 +30,8 @@ st.subheader("Real-time decentralized model inference preview")
 
 
 # --- 3. Resource Asset Loading ---
-MODEL_PATH = "exported_models/node1_final.keras"
-MAP_PATH = "exported_models/node1_class_map.json"
+MODEL_PATH = "exported_models/node3_final.keras"
+MAP_PATH = "exported_models/node3_class_map.json"
 
 @st.cache_resource
 def load_dfl_assets():
@@ -61,11 +61,23 @@ if model is not None:
         st.sidebar.markdown(log)
 
     # Establish main structural grid layout
-    col_cam, col_pred = st.columns([2, 1])
+    col_input, col_pred = st.columns([2, 1])
 
-    with col_cam:
-        # Securely stream host webcam capture frames
-        img_file = st.camera_input("Position your hand sign clearly in the frame")
+    with col_input:
+        # Create tabs to switch seamlessly between Camera and Drag & Drop file upload
+        tab_camera, tab_upload = st.tabs(["📷 Take Live Photo", "📁 Drag & Drop Image File"])
+
+        img_file = None
+
+        with tab_camera:
+            camera_data = st.camera_input("Position your hand sign clearly in the frame")
+            if camera_data is not None:
+                img_file = camera_data
+
+        with tab_upload:
+            uploaded_data = st.file_uploader("Choose an image file...", type=["jpg", "jpeg", "png"])
+            if uploaded_data is not None:
+                img_file = uploaded_data
 
     with col_pred:
         st.write("### Prediction")
@@ -75,25 +87,22 @@ if model is not None:
             bytes_data = img_file.getvalue()
             cv_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
 
-            # --- CENTER CROP PROCESSING ---
+            # --- 1. CENTER CROP PROCESSING ---
             # Squashes wide-angle background clutter to closely mimic tight Kaggle image boundaries
             h, w, _ = cv_img.shape
             crop_size = min(h, w)
             start_x = (w - crop_size) // 2
             start_y = (h - crop_size) // 2
             cv_img = cv_img[start_y:start_y+crop_size, start_x:start_x+crop_size]
-            # -------------------------------
 
-            # --- ADD THIS BRIGHTNESS & CONTRAST BOOST ---
-            # Convert to YUV color space to isolate brightness (Y channel)
+            # --- 2. CONTRAST & ILLUMINATION ENHANCEMENT ---
+            # Converts to YUV space to isolate and boost the brightness channel locally via CLAHE
             yuv = cv2.cvtColor(cv_img, cv2.COLOR_BGR2YUV)
-            # Apply CLAHE to equalize the brightness channel locally
             clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
             yuv[:,:,0] = clahe.apply(yuv[:,:,0])
-            # Convert back to standard BGR
             cv_img = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR)
-            # --------------------------------------------
 
+            # --- 3. MODEL INFERENCE ---
             # Re-verify and standardize channels to align with MobileNetV2 inputs
             rgb_img = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
             resized = cv2.resize(rgb_img, (128, 128))
