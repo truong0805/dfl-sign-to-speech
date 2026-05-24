@@ -1,8 +1,8 @@
 {
     "node_id": 1,
-    "total_rounds": 12,
-    "peak_val_acc": 0.9509615302085876,
-    "peak_round": 6,
-    "final_val_acc": 0.9509615302085876,
-    "final_val_loss": 0.21272395551204681
+    "total_rounds": 20,
+    "peak_val_acc": 0.9926282167434692,
+    "peak_round": 20,
+    "final_val_acc": 0.9926282167434692,
+    "final_val_loss": 0.03352649509906769
 }
