@@ -1,0 +1,9 @@
+data_shards/
+resized_dataset/
+checkpoints/
+exported_models/
+venv/
+__pycache__/
+*.pyc
+*.npy
+*.keras

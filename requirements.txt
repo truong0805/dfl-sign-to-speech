@@ -1,6 +1,7 @@
-tensorflow-cpu>=2.12.0
+tensorflow[and-cuda]==2.16.1
 grpcio
 grpcio-tools
+protobuf
 numpy
 scipy
 pillow

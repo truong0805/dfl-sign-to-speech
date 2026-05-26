@@ -1,5 +1,20 @@
+# Virtual environments
+venv/
+venv_collect/
+venv_train/
+
+# Python cache
 __pycache__/
-.idea/
-.DS_Store
 *.pyc
-data/
+
+# TensorFlow / training artifacts
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Streamlit cache
+.streamlit/
+
+# Jupyter
+.ipynb_checkpoints/

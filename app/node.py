@@ -7,8 +7,18 @@ import random
 import threading
 import numpy as np
 from concurrent import futures
-from tensorflow.keras.preprocessing.image import ImageDataGenerator
 
+import tensorflow as tf
+
+# Must be set BEFORE any other TF operations
+gpus = tf.config.list_physical_devices('GPU')
+if gpus:
+    for gpu in gpus:
+        tf.config.experimental.set_memory_growth(gpu, True)
+    print(f"GPU memory growth enabled for {len(gpus)} GPU(s).", flush=True)
+
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
 import dfl_service_pb2
 import dfl_service_pb2_grpc
 from model import build_model, serialize_weights, deserialize_weights, get_weight_count
@@ -26,7 +36,6 @@ EXPORT_DIR      = "/app/exported_models"
 
 
 def save_checkpoint(model, round_num, round_history):
-    """Save model weights and training history to disk after every round."""
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
     np.save(os.path.join(CHECKPOINT_DIR, "weights.npy"),
             np.array(model.get_weights(), dtype=object))
@@ -36,7 +45,6 @@ def save_checkpoint(model, round_num, round_history):
 
 
 def load_checkpoint(model):
-    """Load weights and history from disk if a checkpoint exists."""
     weights_path = os.path.join(CHECKPOINT_DIR, "weights.npy")
     meta_path    = os.path.join(CHECKPOINT_DIR, "checkpoint.json")
     if os.path.exists(weights_path) and os.path.exists(meta_path):
@@ -55,29 +63,18 @@ def load_checkpoint(model):
 
 
 def export_model(model, round_history, train_data):
-    """Save final model in Keras format with class mapping."""
     os.makedirs(EXPORT_DIR, exist_ok=True)
-
-    # Save model
     model_path = os.path.join(EXPORT_DIR, f"node{NODE_ID}_final.keras")
     model.save(model_path)
     print(f"[Node {NODE_ID}] Model exported to {model_path}", flush=True)
 
-    # BUG FIX: Always use a canonical A-Z label map (indices 0-25).
-    # Previously this was derived from train_data.class_indices, which skips
-    # any empty local folders (e.g. node1 has no R images, so Keras maps
-    # index 17 → S, 18 → T, etc., while the JSON still claims 17 → R).
-    # The aggregated model's output layer always uses all 26 classes (set
-    # at build time via NUM_CLASSES=26), so the map must match that fixed
-    # ordering: 0=A, 1=B, ..., 25=Z.
     label_map = {i: chr(ord('A') + i) for i in range(NUM_CLASSES)}
     map_path = os.path.join(EXPORT_DIR, f"node{NODE_ID}_class_map.json")
     with open(map_path, "w") as f:
         json.dump(label_map, f, indent=4)
     print(f"[Node {NODE_ID}] Class map exported to {map_path}", flush=True)
 
-    # Save training summary
-    if round_history:  # noqa: SIM102
+    if round_history:
         best = max(round_history, key=lambda x: x[2])
         summary = {
             "node_id":        NODE_ID,
@@ -104,17 +101,26 @@ def load_sample_count():
 
 
 def load_training_data():
-    """Load train/ and val/ subdirectories separately."""
     train_datagen = ImageDataGenerator(
-        rescale=1.0 / 255,
-        rotation_range=10,
-        width_shift_range=0.1,
-        height_shift_range=0.1,
-        horizontal_flip=True,
-        zoom_range=0.1,
-    )
-    val_datagen = ImageDataGenerator(rescale=1.0 / 255)
+        preprocessing_function=preprocess_input,
 
+        rotation_range=15,
+
+        width_shift_range=0.15,
+        height_shift_range=0.15,
+
+        zoom_range=0.15,
+
+        brightness_range=[0.7, 1.3],
+
+        shear_range=10,
+
+        fill_mode='nearest'
+    )
+
+    val_datagen = ImageDataGenerator(
+        preprocessing_function=preprocess_input
+    )
     train_dir = os.path.join(DATA_DIR, "train")
     val_dir   = os.path.join(DATA_DIR, "val")
 
@@ -122,13 +128,14 @@ def load_training_data():
         train_data = train_datagen.flow_from_directory(
             train_dir,
             target_size=(128, 128),
-            batch_size=16,
+            batch_size=8,        # reduced from 16 to save RAM
             class_mode="categorical",
+            shuffle=True,
         )
         val_data = val_datagen.flow_from_directory(
             val_dir,
             target_size=(128, 128),
-            batch_size=16,
+            batch_size=8,        # reduced from 16 to save RAM
             class_mode="categorical",
             shuffle=False,
         )
@@ -144,18 +151,26 @@ def load_training_data():
 
 
 def train_local(model, train_data, val_data, epochs=1):
-    """Train on local shard, evaluate on local val set."""
     if train_data is None or train_data.samples == 0:
         print(f"[Node {NODE_ID}] No local data — skipping training.", flush=True)
         return None, None
 
     print(f"[Node {NODE_ID}] Training {epochs} epoch(s) on {train_data.samples} samples...", flush=True)
 
+    callbacks = [
+        tf.keras.callbacks.EarlyStopping(
+            monitor='val_loss',
+            patience=3,
+            restore_best_weights=True
+        )
+    ]
+
     history = model.fit(
         train_data,
         epochs=epochs,
         verbose=0,
         validation_data=val_data,
+        callbacks=callbacks
     )
 
     acc  = history.history.get("val_accuracy", [0])[-1]
@@ -166,7 +181,6 @@ def train_local(model, train_data, val_data, epochs=1):
 
 
 def fedavg(local_flat, local_n, peer_weights):
-    """Weighted FedAvg: w_new = sum(n_i * w_i) / sum(n_i)"""
     all_weights = [(local_flat, local_n)] + peer_weights
     total_n = sum(n for _, n in all_weights)
     if total_n == 0:
@@ -197,8 +211,6 @@ buffer_lock = threading.Lock()
 class DFLServicer(dfl_service_pb2_grpc.DFLServiceServicer):
     def GossipWeights(self, request, context):
         flat = np.frombuffer(request.model_data, dtype=np.float32).copy()
-        # BUG FIX: use sender's sample_count for correct FedAvg weighting.
-        # Previously local_n (our own count) was stored for every peer.
         peer_sample_count = request.sample_count if request.sample_count > 0 else 1
         with buffer_lock:
             received_buffer.append((flat, peer_sample_count))
@@ -273,29 +285,27 @@ def serve():
         # Step 3: Save checkpoint after every round
         save_checkpoint(model, round_num, round_history)
 
-        # Step 4: Gossip to ALL neighbors so knowledge spreads every round.
-        # BUG FIX: previously only one random neighbor was chosen per round,
-        # causing slow/uneven propagation of letters unique to other nodes.
+        # Step 4: Gossip to ONE random neighbor to reduce RAM/bandwidth pressure
         if NEIGHBORS:
             payload = serialize_weights(model)
-            for target in NEIGHBORS:
-                try:
-                    with grpc.insecure_channel(f"{target}:50051", options=grpc_options) as channel:
-                        stub = dfl_service_pb2_grpc.DFLServiceStub(channel)
-                        response = stub.GossipWeights(
-                            dfl_service_pb2.WeightRequest(
-                                node_id=NODE_ID,
-                                model_data=payload,
-                                sample_count=local_n,
-                            )
+            target = random.choice(NEIGHBORS)
+            try:
+                with grpc.insecure_channel(f"{target}:50051", options=grpc_options) as channel:
+                    stub = dfl_service_pb2_grpc.DFLServiceStub(channel)
+                    response = stub.GossipWeights(
+                        dfl_service_pb2.WeightRequest(
+                            node_id=NODE_ID,
+                            model_data=payload,
+                            sample_count=local_n,
                         )
-                        if response.success:
-                            print(
-                                f"[Node {NODE_ID}] Round {round_num}: Gossiped to {target} ({len(payload)} bytes).",
-                                flush=True,
-                            )
-                except Exception as e:
-                    print(f"[Node {NODE_ID}] Could not reach {target}: {e}", flush=True)
+                    )
+                    if response.success:
+                        print(
+                            f"[Node {NODE_ID}] Round {round_num}: Gossiped to {target} ({len(payload)} bytes).",
+                            flush=True,
+                        )
+            except Exception as e:
+                print(f"[Node {NODE_ID}] Could not reach {target}: {e}", flush=True)
 
         # Stop when MAX_ROUNDS reached
         if MAX_ROUNDS and round_num >= MAX_ROUNDS:
@@ -311,9 +321,7 @@ def serve():
             else:
                 print(f"[Node {NODE_ID}] No training data — no accuracy report.", flush=True)
 
-            # Export final model
             export_model(model, round_history, train_data)
-
             server.stop(0)
             break
 

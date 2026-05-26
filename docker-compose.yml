@@ -9,10 +9,17 @@ services:
     environment:
       - NODE_ID=1
       - NEIGHBORS=node2,node3,node4,node5
-      - LOCAL_EPOCHS=5
+      - LOCAL_EPOCHS=1
       - GOSSIP_INTERVAL=30
-      - MAX_ROUNDS=20
+      - MAX_ROUNDS=15
       - NUM_CLASSES=26
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
   node2:
     build: .
     volumes:
@@ -23,10 +30,17 @@ services:
     environment:
       - NODE_ID=2
       - NEIGHBORS=node1,node3,node4,node5
-      - LOCAL_EPOCHS=5
+      - LOCAL_EPOCHS=1
       - GOSSIP_INTERVAL=30
-      - MAX_ROUNDS=20
+      - MAX_ROUNDS=15
       - NUM_CLASSES=26
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
   node3:
     build: .
     volumes:
@@ -37,10 +51,17 @@ services:
     environment:
       - NODE_ID=3
       - NEIGHBORS=node1,node2,node4,node5
-      - LOCAL_EPOCHS=5
+      - LOCAL_EPOCHS=1
       - GOSSIP_INTERVAL=30
-      - MAX_ROUNDS=20
+      - MAX_ROUNDS=15
       - NUM_CLASSES=26
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
   node4:
     build: .
     volumes:
@@ -51,10 +72,17 @@ services:
     environment:
       - NODE_ID=4
       - NEIGHBORS=node1,node2,node3,node5
-      - LOCAL_EPOCHS=5
+      - LOCAL_EPOCHS=1
       - GOSSIP_INTERVAL=30
-      - MAX_ROUNDS=20
+      - MAX_ROUNDS=15
       - NUM_CLASSES=26
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
   node5:
     build: .
     volumes:
@@ -65,7 +93,14 @@ services:
     environment:
       - NODE_ID=5
       - NEIGHBORS=node1,node2,node3,node4
-      - LOCAL_EPOCHS=5
+      - LOCAL_EPOCHS=1
       - GOSSIP_INTERVAL=30
-      - MAX_ROUNDS=20
+      - MAX_ROUNDS=15
       - NUM_CLASSES=26
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
