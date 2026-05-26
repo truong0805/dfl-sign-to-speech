@@ -3,7 +3,6 @@ import sys
 import time
 import json
 import grpc
-import random
 import threading
 import numpy as np
 from concurrent import futures
@@ -58,26 +57,21 @@ def export_model(model, round_history, train_data):
     """Save final model in Keras format with class mapping."""
     os.makedirs(EXPORT_DIR, exist_ok=True)
 
-    # Save model
     model_path = os.path.join(EXPORT_DIR, f"node{NODE_ID}_final.keras")
     model.save(model_path)
     print(f"[Node {NODE_ID}] Model exported to {model_path}", flush=True)
 
-    # BUG FIX: Always use a canonical A-Z label map (indices 0-25).
-    # Previously this was derived from train_data.class_indices, which skips
-    # any empty local folders (e.g. node1 has no R images, so Keras maps
-    # index 17 → S, 18 → T, etc., while the JSON still claims 17 → R).
-    # The aggregated model's output layer always uses all 26 classes (set
-    # at build time via NUM_CLASSES=26), so the map must match that fixed
-    # ordering: 0=A, 1=B, ..., 25=Z.
+    # Always use a canonical A-Z label map (indices 0-25).
+    # Deriving from train_data.class_indices is unsafe: if a node's local
+    # shard is missing any letter folder, Keras re-numbers the remaining
+    # indices and the JSON map would be wrong for those positions.
     label_map = {i: chr(ord('A') + i) for i in range(NUM_CLASSES)}
     map_path = os.path.join(EXPORT_DIR, f"node{NODE_ID}_class_map.json")
     with open(map_path, "w") as f:
         json.dump(label_map, f, indent=4)
     print(f"[Node {NODE_ID}] Class map exported to {map_path}", flush=True)
 
-    # Save training summary
-    if round_history:  # noqa: SIM102
+    if round_history:
         best = max(round_history, key=lambda x: x[2])
         summary = {
             "node_id":        NODE_ID,
@@ -110,8 +104,13 @@ def load_training_data():
         rotation_range=10,
         width_shift_range=0.1,
         height_shift_range=0.1,
-        horizontal_flip=True,
+        # FIX: horizontal_flip REMOVED.
+        # ASL signs are NOT mirror-symmetric. Many letters (J, Z, G, H, etc.)
+        # are directional — flipping them produces a corrupted or wrong-class
+        # training sample. This was a silent source of training noise.
         zoom_range=0.1,
+        brightness_range=[0.8, 1.2],  # simulate lighting variation
+        fill_mode='nearest',
     )
     val_datagen = ImageDataGenerator(rescale=1.0 / 255)
 
@@ -124,6 +123,7 @@ def load_training_data():
             target_size=(128, 128),
             batch_size=16,
             class_mode="categorical",
+            shuffle=True,
         )
         val_data = val_datagen.flow_from_directory(
             val_dir,
@@ -197,8 +197,7 @@ buffer_lock = threading.Lock()
 class DFLServicer(dfl_service_pb2_grpc.DFLServiceServicer):
     def GossipWeights(self, request, context):
         flat = np.frombuffer(request.model_data, dtype=np.float32).copy()
-        # BUG FIX: use sender's sample_count for correct FedAvg weighting.
-        # Previously local_n (our own count) was stored for every peer.
+        # Use the sender's sample_count for correct FedAvg weighting.
         peer_sample_count = request.sample_count if request.sample_count > 0 else 1
         with buffer_lock:
             received_buffer.append((flat, peer_sample_count))
@@ -273,9 +272,7 @@ def serve():
         # Step 3: Save checkpoint after every round
         save_checkpoint(model, round_num, round_history)
 
-        # Step 4: Gossip to ALL neighbors so knowledge spreads every round.
-        # BUG FIX: previously only one random neighbor was chosen per round,
-        # causing slow/uneven propagation of letters unique to other nodes.
+        # Step 4: Gossip to ALL neighbors every round
         if NEIGHBORS:
             payload = serialize_weights(model)
             for target in NEIGHBORS:
@@ -311,9 +308,7 @@ def serve():
             else:
                 print(f"[Node {NODE_ID}] No training data — no accuracy report.", flush=True)
 
-            # Export final model
             export_model(model, round_history, train_data)
-
             server.stop(0)
             break
 
