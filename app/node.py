@@ -5,8 +5,8 @@ import json
 import grpc
 import threading
 import numpy as np
+import tensorflow as tf
 from concurrent import futures
-from tensorflow.keras.preprocessing.image import ImageDataGenerator
 
 import dfl_service_pb2
 import dfl_service_pb2_grpc
@@ -22,10 +22,12 @@ MAX_ROUNDS      = int(os.environ.get("MAX_ROUNDS", 20))
 NUM_CLASSES     = int(os.environ.get("NUM_CLASSES", 26))
 CHECKPOINT_DIR  = f"/app/checkpoints/node{NODE_ID}"
 EXPORT_DIR      = "/app/exported_models"
+AUTOTUNE        = tf.data.AUTOTUNE
+IMG_SIZE        = (128, 128)
+BATCH_SIZE      = 64
 
 
 def save_checkpoint(model, round_num, round_history):
-    """Save model weights and training history to disk after every round."""
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
     np.save(os.path.join(CHECKPOINT_DIR, "weights.npy"),
             np.array(model.get_weights(), dtype=object))
@@ -35,7 +37,6 @@ def save_checkpoint(model, round_num, round_history):
 
 
 def load_checkpoint(model):
-    """Load weights and history from disk if a checkpoint exists."""
     weights_path = os.path.join(CHECKPOINT_DIR, "weights.npy")
     meta_path    = os.path.join(CHECKPOINT_DIR, "checkpoint.json")
     if os.path.exists(weights_path) and os.path.exists(meta_path):
@@ -53,19 +54,15 @@ def load_checkpoint(model):
     return 0, []
 
 
-def export_model(model, round_history, train_data):
-    """Save final model in Keras format with class mapping."""
+def export_model(model, round_history, num_classes):
     os.makedirs(EXPORT_DIR, exist_ok=True)
 
     model_path = os.path.join(EXPORT_DIR, f"node{NODE_ID}_final.keras")
     model.save(model_path)
     print(f"[Node {NODE_ID}] Model exported to {model_path}", flush=True)
 
-    # Always use a canonical A-Z label map (indices 0-25).
-    # Deriving from train_data.class_indices is unsafe: if a node's local
-    # shard is missing any letter folder, Keras re-numbers the remaining
-    # indices and the JSON map would be wrong for those positions.
-    label_map = {i: chr(ord('A') + i) for i in range(NUM_CLASSES)}
+    # Always use canonical A-Z map — never derive from class_indices
+    label_map = {i: chr(ord('A') + i) for i in range(num_classes)}
     map_path = os.path.join(EXPORT_DIR, f"node{NODE_ID}_class_map.json")
     with open(map_path, "w") as f:
         json.dump(label_map, f, indent=4)
@@ -81,10 +78,9 @@ def export_model(model, round_history, train_data):
             "final_val_acc":  round_history[-1][2],
             "final_val_loss": round_history[-1][1],
         }
-        summary_path = os.path.join(EXPORT_DIR, f"node{NODE_ID}_summary.json")
-        with open(summary_path, "w") as f:
+        with open(os.path.join(EXPORT_DIR, f"node{NODE_ID}_summary.json"), "w") as f:
             json.dump(summary, f, indent=4)
-        print(f"[Node {NODE_ID}] Summary: peak={best[2]*100:.2f}% at round {best[0]}", flush=True)
+        print(f"[Node {NODE_ID}] Peak val accuracy: {best[2]*100:.2f}% at round {best[0]}", flush=True)
 
 
 def load_sample_count():
@@ -93,63 +89,111 @@ def load_sample_count():
         with open(meta_path) as f:
             return json.load(f).get("sample_count", 1)
     except Exception as e:
-        print(f"[Node {NODE_ID}] WARNING: Could not load metadata.json: {e}. Using 1.", flush=True)
+        print(f"[Node {NODE_ID}] WARNING: metadata.json error: {e}. Using 1.", flush=True)
         return 1
 
 
-def load_training_data():
-    """Load train/ and val/ subdirectories separately."""
-    train_datagen = ImageDataGenerator(
-        rescale=1.0 / 255,
-        rotation_range=10,
-        width_shift_range=0.1,
-        height_shift_range=0.1,
-        # FIX: horizontal_flip REMOVED.
-        # ASL signs are NOT mirror-symmetric. Many letters (J, Z, G, H, etc.)
-        # are directional — flipping them produces a corrupted or wrong-class
-        # training sample. This was a silent source of training noise.
-        zoom_range=0.1,
-        brightness_range=[0.8, 1.2],  # simulate lighting variation
-        fill_mode='nearest',
-    )
-    val_datagen = ImageDataGenerator(rescale=1.0 / 255)
+def count_samples_in_dir(directory):
+    """Count image files directly from disk — no need to iterate the dataset."""
+    total = 0
+    for root, _, files in os.walk(directory):
+        total += sum(
+            1 for f in files
+            if f.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp', '.gif'))
+        )
+    return total
 
+
+# ---------------------------------------------------------------------------
+# In-graph augmentation — horizontal_flip DISABLED (ASL is not mirror-symmetric)
+# ---------------------------------------------------------------------------
+data_augmentation = tf.keras.Sequential([
+    tf.keras.layers.RandomRotation(0.08),
+    tf.keras.layers.RandomTranslation(0.1, 0.1),
+    tf.keras.layers.RandomZoom(0.1),
+    tf.keras.layers.RandomBrightness(0.2),
+    tf.keras.layers.RandomContrast(0.1),
+], name='augmentation')
+
+
+def load_training_data():
+    """
+    tf.data pipeline.
+    EfficientNetB0 has built-in preprocessing, so pass float32 in [0, 255].
+
+    BUG FIX: cache ordering.
+    Wrong order (previous version): augment → cache → count by iterating
+      - The iteration to count samples consumed the cache pass, locking in
+        fixed augmented images. Every epoch then saw the same augmented data.
+    Correct order: shuffle → augment → prefetch (NO cache on train set)
+      - Each epoch generates fresh random augmentations.
+      - Val set is cached since it never changes.
+    """
     train_dir = os.path.join(DATA_DIR, "train")
     val_dir   = os.path.join(DATA_DIR, "val")
 
     try:
-        train_data = train_datagen.flow_from_directory(
+        # Count samples from disk before building the pipeline
+        train_samples = count_samples_in_dir(train_dir)
+        val_samples   = count_samples_in_dir(val_dir)
+
+        train_ds = tf.keras.utils.image_dataset_from_directory(
             train_dir,
-            target_size=(128, 128),
-            batch_size=16,
-            class_mode="categorical",
+            image_size=IMG_SIZE,
+            batch_size=BATCH_SIZE,
+            label_mode="categorical",
             shuffle=True,
         )
-        val_data = val_datagen.flow_from_directory(
+        val_ds = tf.keras.utils.image_dataset_from_directory(
             val_dir,
-            target_size=(128, 128),
-            batch_size=16,
-            class_mode="categorical",
+            image_size=IMG_SIZE,
+            batch_size=BATCH_SIZE,
+            label_mode="categorical",
             shuffle=False,
         )
+
+        num_classes = len(train_ds.class_names)
+
+        def cast(x, y):
+            return tf.cast(x, tf.float32), y
+
+        def augment(x, y):
+            return data_augmentation(x, training=True), y
+
+        # Train: shuffle → cast → augment → prefetch (no cache: keeps augmentation random)
+        train_ds = (train_ds
+                    .map(cast,    num_parallel_calls=AUTOTUNE)
+                    .shuffle(2000)
+                    .map(augment, num_parallel_calls=AUTOTUNE)
+                    .prefetch(AUTOTUNE))
+
+        # Val: cast → cache → prefetch (cache is fine: val never changes)
+        val_ds = (val_ds
+                  .map(cast, num_parallel_calls=AUTOTUNE)
+                  .cache()
+                  .prefetch(AUTOTUNE))
+
         print(
-            f"[Node {NODE_ID}] Loaded {train_data.samples} train images, "
-            f"{val_data.samples} val images, {train_data.num_classes} classes.",
-            flush=True,
+            f"[Node {NODE_ID}] Loaded {train_samples} train, "
+            f"{val_samples} val, {num_classes} classes.", flush=True
         )
-        return train_data, val_data
+
+        train_ds.samples     = train_samples
+        train_ds.num_classes = num_classes
+        val_ds.samples       = val_samples
+        return train_ds, val_ds
+
     except Exception as e:
-        print(f"[Node {NODE_ID}] WARNING: Could not load training data: {e}. Skipping training.", flush=True)
+        print(f"[Node {NODE_ID}] WARNING: Could not load data: {e}.", flush=True)
         return None, None
 
 
 def train_local(model, train_data, val_data, epochs=1):
-    """Train on local shard, evaluate on local val set."""
     if train_data is None or train_data.samples == 0:
         print(f"[Node {NODE_ID}] No local data — skipping training.", flush=True)
         return None, None
 
-    print(f"[Node {NODE_ID}] Training {epochs} epoch(s) on {train_data.samples} samples...", flush=True)
+    print(f"[Node {NODE_ID}] Training {epochs} epoch(s)...", flush=True)
 
     history = model.fit(
         train_data,
@@ -160,13 +204,11 @@ def train_local(model, train_data, val_data, epochs=1):
 
     acc  = history.history.get("val_accuracy", [0])[-1]
     loss = history.history.get("val_loss",     [0])[-1]
-
-    print(f"[Node {NODE_ID}] Local train done. val_loss={loss:.4f}  val_acc={acc * 100:.2f}%", flush=True)
+    print(f"[Node {NODE_ID}] val_loss={loss:.4f}  val_acc={acc*100:.2f}%", flush=True)
     return loss, acc
 
 
 def fedavg(local_flat, local_n, peer_weights):
-    """Weighted FedAvg: w_new = sum(n_i * w_i) / sum(n_i)"""
     all_weights = [(local_flat, local_n)] + peer_weights
     total_n = sum(n for _, n in all_weights)
     if total_n == 0:
@@ -174,7 +216,7 @@ def fedavg(local_flat, local_n, peer_weights):
     return (sum(w * n for w, n in all_weights) / total_n).astype(np.float32)
 
 
-# --- Load data, then build model ---
+# --- Bootstrap ---
 local_n = load_sample_count()
 print(f"[Node {NODE_ID}] Local sample count: {local_n}", flush=True)
 
@@ -182,14 +224,12 @@ train_data, val_data = load_training_data()
 num_classes = int(os.environ.get("NUM_CLASSES", 26))
 
 model = build_model(num_classes=num_classes)
-print(f"[Node {NODE_ID}] Model built. Classes: {num_classes}  Total weights: {get_weight_count(model)}", flush=True)
+print(f"[Node {NODE_ID}] Model built. Classes: {num_classes}  Weights: {get_weight_count(model)}", flush=True)
 
-# Load checkpoint if exists
 round_num, round_history = load_checkpoint(model)
 if round_num > 0:
-    print(f"[Node {NODE_ID}] Resuming from round {round_num}, {MAX_ROUNDS - round_num} rounds remaining.", flush=True)
+    print(f"[Node {NODE_ID}] Resuming from round {round_num}.", flush=True)
 
-# Thread-safe buffer for received peer weights
 received_buffer = []
 buffer_lock = threading.Lock()
 
@@ -197,13 +237,12 @@ buffer_lock = threading.Lock()
 class DFLServicer(dfl_service_pb2_grpc.DFLServiceServicer):
     def GossipWeights(self, request, context):
         flat = np.frombuffer(request.model_data, dtype=np.float32).copy()
-        # Use the sender's sample_count for correct FedAvg weighting.
         peer_sample_count = request.sample_count if request.sample_count > 0 else 1
         with buffer_lock:
             received_buffer.append((flat, peer_sample_count))
         print(
             f"[Node {NODE_ID}] Received weights from Node {request.node_id} "
-            f"({len(flat)} params, {peer_sample_count} samples). Buffer size: {len(received_buffer)}",
+            f"({len(flat)} params, {peer_sample_count} samples). Buffer: {len(received_buffer)}",
             flush=True,
         )
         return dfl_service_pb2.WeightResponse(success=True)
@@ -227,12 +266,12 @@ def serve():
         round_num += 1
         print(f"[Node {NODE_ID}] ===== FL Round {round_num}{f'/{MAX_ROUNDS}' if MAX_ROUNDS else ''} =====", flush=True)
 
-        # Step 1: Train and evaluate on val set
+        # Step 1: Local training
         loss, acc = train_local(model, train_data, val_data, epochs=LOCAL_EPOCHS)
         if acc is not None:
             round_history.append((round_num, loss, acc))
 
-        # Step 2: FedAvg with any peer weights received this round
+        # Step 2: FedAvg with received peer weights
         with buffer_lock:
             snapshot = received_buffer.copy()
             received_buffer.clear()
@@ -247,17 +286,12 @@ def serve():
             skipped = len(snapshot) - len(compatible)
 
             if skipped:
-                print(
-                    f"[Node {NODE_ID}] Skipped {skipped} peer weight(s) — "
-                    f"incompatible architecture (different num_classes).",
-                    flush=True,
-                )
+                print(f"[Node {NODE_ID}] Skipped {skipped} incompatible peer weights.", flush=True)
 
             if compatible:
                 aggregated = fedavg(local_flat, local_n, compatible)
                 shapes = [w.shape for w in model.get_weights()]
-                new_weights = []
-                offset = 0
+                new_weights, offset = [], 0
                 for shape in shapes:
                     size = int(np.prod(shape))
                     new_weights.append(aggregated[offset:offset + size].reshape(shape))
@@ -265,14 +299,14 @@ def serve():
                 model.set_weights(new_weights)
                 print(f"[Node {NODE_ID}] Round {round_num}: FedAvg applied ({len(compatible)} peers).", flush=True)
             else:
-                print(f"[Node {NODE_ID}] Round {round_num}: No compatible peer weights — keeping local model.", flush=True)
+                print(f"[Node {NODE_ID}] Round {round_num}: No compatible peers — keeping local model.", flush=True)
         else:
-            print(f"[Node {NODE_ID}] Round {round_num}: No peer weights — keeping local model.", flush=True)
+            print(f"[Node {NODE_ID}] Round {round_num}: No peer weights received.", flush=True)
 
-        # Step 3: Save checkpoint after every round
+        # Step 3: Save checkpoint
         save_checkpoint(model, round_num, round_history)
 
-        # Step 4: Gossip to ALL neighbors every round
+        # Step 4: Gossip to ALL neighbors
         if NEIGHBORS:
             payload = serialize_weights(model)
             for target in NEIGHBORS:
@@ -303,12 +337,11 @@ def serve():
                 print(f"[Node {NODE_ID}] ------+----------+-------------", flush=True)
                 for r, l, a in round_history:
                     marker = " <-- PEAK" if r == best[0] else ""
-                    print(f"[Node {NODE_ID}]   {r:3d} | {l:.4f}   | {a * 100:.2f}%{marker}", flush=True)
-                print(f"[Node {NODE_ID}] Peak val accuracy: {best[2] * 100:.2f}% at Round {best[0]}", flush=True)
+                    print(f"[Node {NODE_ID}]   {r:3d} | {l:.4f}   | {a*100:.2f}%{marker}", flush=True)
             else:
-                print(f"[Node {NODE_ID}] No training data — no accuracy report.", flush=True)
+                print(f"[Node {NODE_ID}] No training data — no report.", flush=True)
 
-            export_model(model, round_history, train_data)
+            export_model(model, round_history, num_classes)
             server.stop(0)
             break
 

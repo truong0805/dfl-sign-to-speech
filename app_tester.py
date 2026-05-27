@@ -9,10 +9,9 @@ from collections import deque
 from tensorflow.keras.models import load_model
 import pyttsx3
 
-# --- 1. Audio Engine Initialization ---
+# --- 1. Audio Engine ---
 @st.cache_resource
 def get_tts_engine():
-    """Initialize the Text-to-Speech engine safely."""
     engine = pyttsx3.init()
     engine.setProperty('rate', 150)
     return engine
@@ -21,77 +20,71 @@ engine = get_tts_engine()
 
 def speak_letter(text):
     """
-    Speak the recognized sign character in a daemon thread so it never
-    blocks Streamlit's main script execution.
-    BUG FIX: previously speak_letter() was called AFTER st.rerun(), which
-    restarts the script immediately — making the TTS call unreachable.
-    Running in a thread sidesteps the rerun timing issue entirely.
+    Run TTS in a daemon thread — speak BEFORE st.rerun() is called,
+    otherwise the call is unreachable (rerun restarts the script immediately).
     """
     def _speak():
         try:
             engine.say(f"Letter {text}")
             engine.runAndWait()
         except Exception:
-            pass  # TTS failure should never crash the UI
+            pass
     threading.Thread(target=_speak, daemon=True).start()
 
 
-# --- 2. Page Configuration & Setup ---
+# --- 2. Page config ---
 st.set_page_config(page_title="Sign-to-Speech DFL Test", layout="wide")
 st.title("Sign Language Recognition System (DFL Tested)")
 st.subheader("Real-time decentralized model inference preview")
 
 
-# --- 3. Resource Asset Loading ---
+# --- 3. Model loading ---
 MODEL_PATH = "exported_models/node3_final.keras"
 MAP_PATH   = "exported_models/node3_class_map.json"
 
 @st.cache_resource
 def load_dfl_assets():
-    """Load the target decentralized Keras model and structural label mappings."""
     if not os.path.exists(MODEL_PATH) or not os.path.exists(MAP_PATH):
-        st.error(
-            f"Could not locate exported model binaries at '{MODEL_PATH}'. "
-            "Ensure your training pipeline completed successfully."
-        )
+        st.error(f"Model not found at '{MODEL_PATH}'. Run training first.")
         return None, None
     model = load_model(MODEL_PATH)
-    with open(MAP_PATH, "r") as f:
+    with open(MAP_PATH) as f:
         class_map = json.load(f)
     return model, class_map
 
 model, class_map = load_dfl_assets()
 
 
-# --- 4. Session State & History Tracking ---
+# --- 4. Session state ---
 if "session_logs" not in st.session_state:
     st.session_state.session_logs = []
 
-# Rolling window for live-photo prediction smoothing.
-# Stores the last N predicted letter indices; majority vote is displayed.
+# Rolling window for live-photo smoothing (majority vote over last N frames)
 SMOOTHING_WINDOW = 7
 if "pred_window" not in st.session_state:
     st.session_state.pred_window = deque(maxlen=SMOOTHING_WINDOW)
 
-# Minimum confidence to display a prediction rather than "Low confidence".
 CONFIDENCE_THRESHOLD = 0.45
 
 
-# --- 5. Preprocessing helpers ---
+# --- 5. Preprocessing ---
 
 def preprocess_image(cv_bgr: np.ndarray) -> np.ndarray:
     """
-    Shared preprocessing pipeline for both camera and uploaded images.
+    Shared preprocessing for both camera and uploaded images.
 
-    Steps:
-      1. Center-square crop  — removes most background clutter.
-      2. CLAHE enhancement   — normalises brightness so dim/bright conditions
-                               look more like the clean Kaggle training set.
-      3. BGR→RGB conversion  — Keras/MobileNetV2 expects RGB; OpenCV loads BGR.
-      4. Resize to 128×128   — matches training resolution.
-      5. Normalise to [0, 1] — matches rescale=1/255 used during training.
+    IMPORTANT — EfficientNetB0 has built-in preprocessing baked into the
+    model graph (include_preprocessing=True was set at build time). This means:
+      - Do NOT divide by 255 before passing to model.predict()
+      - Pass raw pixel values as float32 in [0, 255]
+      - The model handles rescaling and normalisation internally
 
-    Returns a float32 array of shape (128, 128, 3), ready for np.expand_dims.
+    Steps here:
+      1. Center-square crop  — reduces background clutter
+      2. CLAHE enhancement   — normalises brightness (operated on luma only)
+      3. BGR → RGB           — OpenCV loads BGR; model expects RGB
+      4. Resize to 128×128   — matches training resolution
+      5. Cast to float32     — pixels stay in [0, 255], no /255
     """
     h, w = cv_bgr.shape[:2]
 
@@ -101,27 +94,23 @@ def preprocess_image(cv_bgr: np.ndarray) -> np.ndarray:
     x0 = (w - crop) // 2
     cv_bgr = cv_bgr[y0:y0 + crop, x0:x0 + crop]
 
-    # 2. CLAHE contrast enhancement (operates on luma channel only)
+    # 2. CLAHE on luma channel
     yuv = cv2.cvtColor(cv_bgr, cv2.COLOR_BGR2YUV)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     yuv[:, :, 0] = clahe.apply(yuv[:, :, 0])
     cv_bgr = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR)
 
-    # 3. BGR → RGB  (critical: model was trained on RGB images)
+    # 3. BGR → RGB
     rgb = cv2.cvtColor(cv_bgr, cv2.COLOR_BGR2RGB)
 
     # 4. Resize
     rgb = cv2.resize(rgb, (128, 128))
 
-    # 5. Normalise
-    return (rgb / 255.0).astype(np.float32)
+    # 5. Cast to float32, pixels in [0, 255] — EfficientNetB0 preprocesses internally
+    return rgb.astype(np.float32)
 
 
 def run_inference(cv_bgr: np.ndarray):
-    """
-    Run model inference on a single BGR frame.
-    Returns (predicted_letter, confidence, all_probs).
-    """
     tensor = np.expand_dims(preprocess_image(cv_bgr), axis=0)
     probs  = model.predict(tensor, verbose=0)[0]
     idx    = int(np.argmax(probs))
@@ -131,38 +120,28 @@ def run_inference(cv_bgr: np.ndarray):
 
 
 def smoothed_prediction(letter: str, conf: float):
-    """
-    Push the latest prediction into the rolling window and return the
-    majority-vote letter + its average confidence in the window.
-    This reduces flicker from single noisy frames during live capture.
-    """
     st.session_state.pred_window.append(letter)
     window = list(st.session_state.pred_window)
-    # Majority vote
-    voted = max(set(window), key=window.count)
-    # Average confidence for the voted letter is just the latest conf
-    # (keeping it simple; the visual value is the stability, not the number)
+    voted  = max(set(window), key=window.count)
     return voted, conf
 
 
 def render_prediction(letter: str, conf: float, low_conf: bool = False):
-    """Render the large prediction letter + confidence bar."""
     color = "#FF4B4B" if not low_conf else "#999999"
     st.markdown(
         f"<h1 style='font-size:80px;color:{color};text-align:center;margin:0'>"
         f"{letter}</h1>",
         unsafe_allow_html=True,
     )
-    label = f"{conf * 100:.1f}% confident" if not low_conf else "Low confidence — adjust hand position"
+    label = f"{conf*100:.1f}% confident" if not low_conf else "Low confidence — adjust hand position"
     st.markdown(
         f"<p style='text-align:center;font-size:20px'><b>{label}</b></p>",
         unsafe_allow_html=True,
     )
-    # Confidence bar
     st.progress(min(conf, 1.0))
 
 
-# --- 6. Application UI Layout ---
+# --- 6. UI ---
 if model is not None:
     st.sidebar.header("Session Log")
     for log in reversed(st.session_state.session_logs):
@@ -173,8 +152,8 @@ if model is not None:
     with col_input:
         tab_camera, tab_upload = st.tabs(["📷 Take Live Photo", "📁 Drag & Drop Image File"])
 
-        img_file   = None
-        is_live    = False
+        img_file = None
+        is_live  = False
 
         with tab_camera:
             camera_data = st.camera_input("Position your hand sign clearly in the frame")
@@ -186,7 +165,6 @@ if model is not None:
             uploaded_data = st.file_uploader("Choose an image file...", type=["jpg", "jpeg", "png"])
             if uploaded_data is not None:
                 img_file = uploaded_data
-                # Clear the smoothing window when switching to a static image
                 st.session_state.pred_window.clear()
 
     with col_pred:
@@ -201,33 +179,27 @@ if model is not None:
             else:
                 letter, conf, probs = run_inference(cv_img)
 
-                # For live photos, apply rolling-window majority vote
                 if is_live:
                     letter, conf = smoothed_prediction(letter, conf)
 
                 low_conf = conf < CONFIDENCE_THRESHOLD
                 render_prediction(letter, conf, low_conf)
 
-                # Log + TTS — only on new predictions above threshold
                 if not low_conf:
                     timestamp = time.strftime("%H:%M:%S")
-                    log_entry = f"{timestamp} &rarr; **{letter}** ({conf * 100:.1f}%)"
-
+                    log_entry = f"{timestamp} &rarr; **{letter}** ({conf*100:.1f}%)"
                     last_letter = (
                         st.session_state.session_logs[-1].split("**")[1]
                         if st.session_state.session_logs else None
                     )
                     if letter != last_letter:
                         st.session_state.session_logs.append(log_entry)
-                        # BUG FIX: speak BEFORE rerun so the thread is launched
-                        # while the current script execution is still live.
-                        speak_letter(letter)
+                        speak_letter(letter)   # speak BEFORE rerun
                         st.rerun()
 
-                # Show top-3 alternatives in an expander for transparency
                 with st.expander("Top 3 predictions"):
-                    top3_idx = np.argsort(probs)[::-1][:3]
-                    for rank, i in enumerate(top3_idx, 1):
+                    top3 = np.argsort(probs)[::-1][:3]
+                    for rank, i in enumerate(top3, 1):
                         lbl = class_map.get(str(i), "?")
                         pct = probs[i] * 100
                         st.write(f"{rank}. **{lbl}** — {pct:.1f}%")
