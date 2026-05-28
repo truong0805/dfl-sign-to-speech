@@ -6,13 +6,24 @@ services:
       - ./data_shards/node1:/app/data
       - ./checkpoints/node1:/app/checkpoints/node1
       - ./exported_models:/app/exported_models
+      - ./global_val:/app/global_val:ro
     environment:
       - NODE_ID=1
       - NEIGHBORS=node2,node3,node4,node5
       - LOCAL_EPOCHS=5
-      - GOSSIP_INTERVAL=30
-      - MAX_ROUNDS=20
+      - MAX_ROUNDS=40
       - NUM_CLASSES=26
+      - TF_CPU_ALLOCATOR_USE_BFC=1
+      # Strict memory limit to ensure 5 instances fit comfortably in 16GB RAM
+      - TF_BFC_ALLOCATOR_LIMIT_MB=600
+      - TF_CPP_MIN_LOG_LEVEL=2
+      - TF_ENABLE_ONEDNN_OPTS=0
+      - FINE_TUNE_ROUND=0
+      - BATCH_SIZE=8
+      - GLOBAL_VAL_DIR=/app/global_val
+    mem_limit: 2200m
+    memswap_limit: 2200m
+
   node2:
     build: .
     volumes:
@@ -20,13 +31,24 @@ services:
       - ./data_shards/node2:/app/data
       - ./checkpoints/node2:/app/checkpoints/node2
       - ./exported_models:/app/exported_models
+      - ./global_val:/app/global_val:ro
     environment:
       - NODE_ID=2
       - NEIGHBORS=node1,node3,node4,node5
       - LOCAL_EPOCHS=5
-      - GOSSIP_INTERVAL=30
-      - MAX_ROUNDS=20
+      - MAX_ROUNDS=40
       - NUM_CLASSES=26
+      - TF_CPU_ALLOCATOR_USE_BFC=1
+      - TF_BFC_ALLOCATOR_LIMIT_MB=600
+      - TF_CPP_MIN_LOG_LEVEL=2
+      - TF_ENABLE_ONEDNN_OPTS=0
+      - FINE_TUNE_ROUND=0
+      - BATCH_SIZE=8
+      - GLOBAL_VAL_DIR=/app/global_val
+    mem_limit: 2200m
+    memswap_limit: 2200m
+    command: sh -c "sleep 30 && python app/node.py"
+
   node3:
     build: .
     volumes:
@@ -34,13 +56,24 @@ services:
       - ./data_shards/node3:/app/data
       - ./checkpoints/node3:/app/checkpoints/node3
       - ./exported_models:/app/exported_models
+      - ./global_val:/app/global_val:ro
     environment:
       - NODE_ID=3
       - NEIGHBORS=node1,node2,node4,node5
       - LOCAL_EPOCHS=5
-      - GOSSIP_INTERVAL=30
-      - MAX_ROUNDS=20
+      - MAX_ROUNDS=40
       - NUM_CLASSES=26
+      - TF_CPU_ALLOCATOR_USE_BFC=1
+      - TF_BFC_ALLOCATOR_LIMIT_MB=600
+      - TF_CPP_MIN_LOG_LEVEL=2
+      - TF_ENABLE_ONEDNN_OPTS=0
+      - FINE_TUNE_ROUND=0
+      - BATCH_SIZE=8
+      - GLOBAL_VAL_DIR=/app/global_val
+    mem_limit: 2200m
+    memswap_limit: 2200m
+    command: sh -c "sleep 60 && python app/node.py"
+
   node4:
     build: .
     volumes:
@@ -48,13 +81,24 @@ services:
       - ./data_shards/node4:/app/data
       - ./checkpoints/node4:/app/checkpoints/node4
       - ./exported_models:/app/exported_models
+      - ./global_val:/app/global_val:ro
     environment:
       - NODE_ID=4
       - NEIGHBORS=node1,node2,node3,node5
       - LOCAL_EPOCHS=5
-      - GOSSIP_INTERVAL=30
-      - MAX_ROUNDS=20
+      - MAX_ROUNDS=40
       - NUM_CLASSES=26
+      - TF_CPU_ALLOCATOR_USE_BFC=1
+      - TF_BFC_ALLOCATOR_LIMIT_MB=600
+      - TF_CPP_MIN_LOG_LEVEL=2
+      - TF_ENABLE_ONEDNN_OPTS=0
+      - FINE_TUNE_ROUND=0
+      - BATCH_SIZE=8
+      - GLOBAL_VAL_DIR=/app/global_val
+    mem_limit: 2200m
+    memswap_limit: 2200m
+    command: sh -c "sleep 90 && python app/node.py"
+
   node5:
     build: .
     volumes:
@@ -62,10 +106,20 @@ services:
       - ./data_shards/node5:/app/data
       - ./checkpoints/node5:/app/checkpoints/node5
       - ./exported_models:/app/exported_models
+      - ./global_val:/app/global_val:ro
     environment:
       - NODE_ID=5
       - NEIGHBORS=node1,node2,node3,node4
       - LOCAL_EPOCHS=5
-      - GOSSIP_INTERVAL=30
-      - MAX_ROUNDS=20
+      - MAX_ROUNDS=40
       - NUM_CLASSES=26
+      - TF_CPU_ALLOCATOR_USE_BFC=1
+      - TF_BFC_ALLOCATOR_LIMIT_MB=600
+      - TF_CPP_MIN_LOG_LEVEL=2
+      - TF_ENABLE_ONEDNN_OPTS=0
+      - FINE_TUNE_ROUND=0
+      - BATCH_SIZE=8
+      - GLOBAL_VAL_DIR=/app/global_val
+    mem_limit: 2200m
+    memswap_limit: 2200m
+    command: sh -c "sleep 120 && python app/node.py"

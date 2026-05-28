@@ -1,85 +1,97 @@
-from tensorflow.keras import layers, models
-from tensorflow.keras.applications import EfficientNetB0
+"""
+model_image.py — Optimized MobileNetV2 backbone for Sign-to-Speech DFL.
+
+OPTIMIZATIONS:
+  - Streamlined the classification head by connecting GlobalAveragePooling2D
+    directly to the final Dense(26) layer via Dropout. This reduces parameter
+    density, saves activation RAM, and accelerates local epoch convergence.
+  - Retained the functional Keras 3 pattern to avoid input_shape warnings.
+"""
+
+from tensorflow.keras import layers, models, regularizers, Input
+from tensorflow.keras.applications import MobileNetV2
 from tensorflow.keras.optimizers import Adam
 
+INPUT_SHAPE = (128, 128, 3)
 
-def build_model(input_shape=(128, 128, 3), num_classes=26):
+
+def build_model(input_shape=INPUT_SHAPE, num_classes=26):
     """
-    Phase 1 model: EfficientNetB0 base fully frozen.
-    Only the custom classification head is trained.
-
-    WHY EfficientNetB0 instead of MobileNetV2:
-    - MobileNetV2 is optimised for mobile size, not accuracy. It lacks the
-      capacity to reliably separate confusable ASL letters (M/N, K/V, R/U).
-    - EfficientNetB0 achieves ~99.95% on this exact dataset (grassknoted
-      ASL Alphabet, 87k images) in published benchmarks, vs ~85-90% for
-      MobileNetV2.
-    - It is still small enough (4.0MB weights) to gossip over gRPC without
-      hitting the 64MB message limit — no changes needed in node.py.
-    - EfficientNetB0 includes its own preprocessing (rescaling + normalisation
-      built into the model graph), so we set include_preprocessing=True and
-      pass raw [0-255] uint8 tensors from the data pipeline. This removes one
-      source of preprocessing mismatch between training and inference.
-
-    Phase 2 fine-tuning: call fine_tune_model() after Phase 1 converges.
+    Phase 1: MobileNetV2 base fully frozen, train streamlined head.
+    Preprocesses images automatically from [0, 255] to [-1, 1].
     """
-    base_model = EfficientNetB0(
+    base_model = MobileNetV2(
         input_shape=input_shape,
         include_top=False,
         weights='imagenet',
-        include_preprocessing=True,   # built-in rescale + normalise
+        alpha=1.0,
     )
-    # Phase 1: freeze entire base — only train the head
-    base_model.trainable = False
+    base_model.trainable = False  # Phase 1: freeze entire base
 
-    model = models.Sequential([
-        base_model,
-        layers.GlobalAveragePooling2D(),
-        layers.BatchNormalization(),   # stabilises training after pooling
-        layers.Dense(256, activation='relu'),
-        layers.Dropout(0.4),
-        layers.Dense(128, activation='relu'),
-        layers.Dropout(0.2),
-        layers.Dense(num_classes, activation='softmax')
-    ])
+    # Functional API build pattern
+    inputs = Input(shape=input_shape, name='image_input')
+
+    # Preprocessing layer: scale [0, 255] → [-1, 1] inside the execution graph
+    x = layers.Rescaling(scale=1.0 / 127.5, offset=-1.0, name='preprocess')(inputs)
+
+    # Base feature extraction
+    x = base_model(x, training=False)   # Keeps BatchNormalization in inference mode
+    x = layers.GlobalAveragePooling2D(name='gap')(x)
+    x = layers.BatchNormalization(name='head_bn')(x)
+
+    # Optimized: Removed Dense(128) to flatten computational overhead
+    x = layers.Dropout(0.2, name='head_dropout')(x)
+    outputs = layers.Dense(num_classes, activation='softmax', name='predictions')(x)
+
+    model = models.Model(inputs, outputs, name='mobilenetv2_asl')
 
     model.compile(
         optimizer=Adam(learning_rate=1e-3),
         loss='categorical_crossentropy',
         metrics=['accuracy']
     )
+
+    print(f"[build_model] Optimized MobileNetV2 | input={input_shape} | classes={num_classes}")
+    print(f"[build_model] Total params: {model.count_params():,}")
     return model
 
 
-def fine_tune_model(model, num_unfreeze=30):
+def fine_tune_model(model, num_unfreeze=20):
     """
-    Phase 2: unfreeze the top `num_unfreeze` layers of EfficientNetB0
-    and recompile with a much lower learning rate.
-
-    EfficientNetB0 has 237 layers total. Unfreezing the last 30 gives the
-    model enough flexibility to learn fine-grained ASL hand features while
-    keeping the low-level edge/texture detectors frozen and stable.
-
-    Call this ONLY after Phase 1 training has fully converged.
+    Phase 2: unfreeze the top layers of MobileNetV2 for minor refinement.
     """
-    base_model = model.layers[0]      # the EfficientNetB0 sub-model
+    base_model = None
+    for layer in model.layers:
+        if isinstance(layer, MobileNetV2.__class__) or 'mobilenetv2' in layer.name.lower():
+            base_model = layer
+            break
+
+    if base_model is None:
+        from tensorflow.keras.applications import MobileNetV2 as MNV2
+        for layer in model.layers:
+            if hasattr(layer, 'layers'):
+                base_model = layer
+                break
+
+    if base_model is None:
+        print("[fine_tune_model] WARNING: could not find MobileNetV2 sub-model.")
+        return model
+
     base_model.trainable = True
 
-    # Re-freeze everything except the last `num_unfreeze` layers
     for layer in base_model.layers[:-num_unfreeze]:
         layer.trainable = False
 
-    # Keep BatchNorm layers in inference mode during fine-tuning —
-    # unfreezing BN with a small batch causes instability.
+    # Freeze BN to handle small decentralized batch restrictions safely
     for layer in base_model.layers:
         if isinstance(layer, layers.BatchNormalization):
             layer.trainable = False
 
     trainable_count = sum(1 for l in base_model.layers if l.trainable)
-    print(f"[fine_tune_model] Unfroze top {trainable_count} EfficientNetB0 layers.")
+    print(f"[fine_tune_model] Unfroze top {trainable_count} MobileNetV2 layers.")
 
     model.compile(
-        optimizer=Adam(learning_rate=1e-4),   # 10× lower than Phase 1
+        optimizer=Adam(learning_rate=1e-5),
         loss='categorical_crossentropy',
         metrics=['accuracy']
     )
