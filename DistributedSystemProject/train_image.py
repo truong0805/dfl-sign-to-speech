@@ -1,27 +1,28 @@
 """
 train_image.py — standalone full-dataset trainer for MobileNetV2.
 
-Run this ONCE on the full dataset (before DFL) to verify the model can
-learn the task. The resulting val_acc gives an upper-bound benchmark for
-what the DFL nodes should approach after enough rounds.
+Run this ONCE on the full dataset (before DFL) to get an upper-bound benchmark.
+The resulting val_acc is the ceiling your DFL nodes should approach after enough rounds.
 
-Key changes from EfficientNetB0 version:
-  - Backbone: EfficientNetB0 → MobileNetV2 (lighter activation RAM, no crashes)
-  - IMG_SIZE: kept at 128×128 — matches resize.py, no re-resizing needed
-  - Preprocessing: Lambda layer inside model handles [0,255] → [-1,1]
-                   so data pipeline stays the same (cast to float32, no division)
+CHANGES FROM PREVIOUS VERSION:
+  - Augmentation aligned with node.py (rotation 15%, translation 10%, zoom 15%,
+    brightness 20%, contrast 20%). Previously the standalone trainer used different
+    augmentation strengths than the nodes — this causes the benchmark to be
+    unrepresentative of what the distributed system actually trains on.
+  - Added cosine LR schedule to match model_image.py (was using the old fixed LR).
+  - Phase 2 fine-tuning now unfreezes 30 layers (was 20) to match node.py.
 """
 
 import os
 import tensorflow as tf
-from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, ModelCheckpoint
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
 from model_image import build_model, fine_tune_model
 import json
 
 DATA_DIR   = os.environ.get("IMAGE_DATA_DIR", "resized_dataset")
 AUTOTUNE   = tf.data.AUTOTUNE
-IMG_SIZE   = (128, 128)    # matches resize.py — no re-resizing needed
-BATCH_SIZE = 32            # safe for standalone training on 16 GB machine
+IMG_SIZE   = (128, 128)
+BATCH_SIZE = 32     # safe for standalone training on a 16 GB machine
 
 
 def load_dataset(split_dir, shuffle):
@@ -33,19 +34,19 @@ def load_dataset(split_dir, shuffle):
         shuffle=shuffle,
     )
     # Cast to float32 in [0, 255].
-    # The Lambda preprocess layer inside build_model() converts to [-1, 1]
-    # as MobileNetV2 requires — no manual division here.
+    # The Rescaling layer inside build_model() converts to [-1, 1] at runtime.
     ds = ds.map(lambda x, y: (tf.cast(x, tf.float32), y), num_parallel_calls=AUTOTUNE)
     return ds
 
 
-# Augmentation — horizontal_flip DISABLED (ASL is not mirror-symmetric).
+# Augmentation — kept in sync with node.py so this benchmark is representative.
+# Horizontal flip DISABLED: ASL is NOT mirror-symmetric (e.g. J, Z differ from their mirrors).
 data_augmentation = tf.keras.Sequential([
-    tf.keras.layers.RandomRotation(0.08),
-    tf.keras.layers.RandomTranslation(0.1, 0.1),
-    tf.keras.layers.RandomZoom(0.1),
-    tf.keras.layers.RandomBrightness(0.1),
-    tf.keras.layers.RandomContrast(0.1),
+    tf.keras.layers.RandomRotation(0.15),
+    tf.keras.layers.RandomTranslation(0.10, 0.10),
+    tf.keras.layers.RandomZoom(0.15),
+    tf.keras.layers.RandomBrightness(0.20),
+    tf.keras.layers.RandomContrast(0.20),
 ], name='augmentation')
 
 
@@ -66,7 +67,6 @@ print(f"Train batches: {len(train_ds)}  |  Val batches: {len(val_ds)}")
 
 model = build_model(input_shape=(*IMG_SIZE, 3), num_classes=num_classes)
 
-# Augment → prefetch (no cache on train to avoid RAM overflow on large datasets)
 train_ds_aug = (train_ds
                 .shuffle(2000)
                 .map(augment, num_parallel_calls=AUTOTUNE)
@@ -78,41 +78,62 @@ val_ds_cached = (val_ds
 
 
 # ---------------------------------------------------------------------------
-# Phase 1: Train head only (MobileNetV2 base frozen)
+# Phase 1: Train classification head only (MobileNetV2 backbone frozen)
 # ---------------------------------------------------------------------------
 os.makedirs("checkpoints", exist_ok=True)
 
 callbacks_phase1 = [
-    EarlyStopping(monitor='val_accuracy', patience=5, restore_best_weights=True, verbose=1),
-    ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=2, min_lr=1e-6, verbose=1),
-    ModelCheckpoint("checkpoints/phase1_best.keras", monitor='val_accuracy', save_best_only=True, verbose=1),
+    EarlyStopping(monitor='val_accuracy', patience=5,
+                  restore_best_weights=True, verbose=1),
+    ModelCheckpoint("checkpoints/phase1_best.keras",
+                    monitor='val_accuracy', save_best_only=True, verbose=1),
 ]
 
 print("\n===== Phase 1: Training head (MobileNetV2 frozen) =====")
-model.fit(train_ds_aug, epochs=20, validation_data=val_ds_cached, callbacks=callbacks_phase1)
+history1 = model.fit(train_ds_aug, epochs=20,
+                     validation_data=val_ds_cached,
+                     callbacks=callbacks_phase1)
 
 loss, acc = model.evaluate(val_ds_cached, verbose=0)
 print(f"\nPhase 1 complete — val accuracy: {acc * 100:.2f}%")
 
+# Log train vs val gap so you can spot overfitting early
+final_epoch = len(history1.history['accuracy']) - 1
+train_acc_final = history1.history['accuracy'][final_epoch]
+print(f"Phase 1 final train acc: {train_acc_final * 100:.2f}%  "
+      f"val acc: {acc * 100:.2f}%  "
+      f"gap: {(train_acc_final - acc) * 100:.2f}pp")
+if (train_acc_final - acc) > 0.10:
+    print("WARNING: train/val gap > 10pp — overfitting detected. "
+          "Consider stronger augmentation or higher dropout.")
+
 
 # ---------------------------------------------------------------------------
-# Phase 2: Fine-tune top 20 MobileNetV2 layers
-# Only run this if Phase 1 val_acc > ~70% and you have enough RAM.
+# Phase 2: Fine-tune top 30 MobileNetV2 layers
 # ---------------------------------------------------------------------------
 if acc >= 0.70:
-    print("\n===== Phase 2: Fine-tuning top 20 MobileNetV2 layers =====")
-    model = fine_tune_model(model, num_unfreeze=20)
+    print("\n===== Phase 2: Fine-tuning top 30 MobileNetV2 layers =====")
+    model = fine_tune_model(model, num_unfreeze=30)
 
     callbacks_phase2 = [
-        EarlyStopping(monitor='val_accuracy', patience=6, restore_best_weights=True, verbose=1),
-        ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=3, min_lr=1e-7, verbose=1),
-        ModelCheckpoint("checkpoints/phase2_best.keras", monitor='val_accuracy', save_best_only=True, verbose=1),
+        EarlyStopping(monitor='val_accuracy', patience=6,
+                      restore_best_weights=True, verbose=1),
+        ModelCheckpoint("checkpoints/phase2_best.keras",
+                        monitor='val_accuracy', save_best_only=True, verbose=1),
     ]
 
-    model.fit(train_ds_aug, epochs=25, validation_data=val_ds_cached, callbacks=callbacks_phase2)
+    history2 = model.fit(train_ds_aug, epochs=25,
+                         validation_data=val_ds_cached,
+                         callbacks=callbacks_phase2)
 
     loss, acc = model.evaluate(val_ds_cached, verbose=0)
     print(f"\nPhase 2 complete — val accuracy: {acc * 100:.2f}%")
+
+    final_epoch2 = len(history2.history['accuracy']) - 1
+    train_acc_final2 = history2.history['accuracy'][final_epoch2]
+    print(f"Phase 2 final train acc: {train_acc_final2 * 100:.2f}%  "
+          f"val acc: {acc * 100:.2f}%  "
+          f"gap: {(train_acc_final2 - acc) * 100:.2f}pp")
 else:
     print(f"\nPhase 1 val_acc={acc*100:.2f}% < 70% — skipping fine-tuning.")
     print("Consider training more epochs or checking your data split.")

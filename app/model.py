@@ -1,9 +1,21 @@
+"""
+model.py — Fixed Bridge Config for Sign-to-Speech DFL.
+Ensures correct path resolution inside Docker containers.
+"""
 import os
 import sys
 import numpy as np
 
-# Bridge: make DistributedSystemProject importable from inside Docker (/app/DistributedSystemProject)
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'DistributedSystemProject'))
+# Absolute path correction for Docker environment safety
+CONTAINER_ROOT = "/app"
+PROJECT_SUBDIR = os.path.join(CONTAINER_ROOT, "DistributedSystemProject")
+
+if os.path.exists(PROJECT_SUBDIR):
+    if PROJECT_SUBDIR not in sys.path:
+        sys.path.insert(0, PROJECT_SUBDIR)
+else:
+    # Local fallback path configuration
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'DistributedSystemProject'))
 
 from model_image import build_model as _build_image_model
 
@@ -25,7 +37,6 @@ def serialize_weights(model) -> bytes:
 
 def deserialize_weights(model, data: bytes) -> None:
     """Restore Keras model weights from a flat float32 byte string."""
-    # .copy() required — frombuffer returns a read-only view
     flat = np.frombuffer(data, dtype=np.float32).copy()
     shapes = [w.shape for w in model.get_weights()]
     weights = []
