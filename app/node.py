@@ -10,17 +10,17 @@ import numpy as np
 # Memory & thread config — MUST happen before TensorFlow is imported.
 # ---------------------------------------------------------------------------
 os.environ.setdefault("TF_CPU_ALLOCATOR_USE_BFC", "1")
-os.environ.setdefault("TF_BFC_ALLOCATOR_LIMIT_MB", "600")
+os.environ.setdefault("TF_BFC_ALLOCATOR_LIMIT_MB", "400")
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
-os.environ["OMP_NUM_THREADS"] = "2"
-os.environ["MKL_NUM_THREADS"] = "2"
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
 
 import tensorflow as tf
 from concurrent import futures
 
-tf.config.threading.set_intra_op_parallelism_threads(2)
-tf.config.threading.set_inter_op_parallelism_threads(2)
+tf.config.threading.set_intra_op_parallelism_threads(1)
+tf.config.threading.set_inter_op_parallelism_threads(1)
 
 import dfl_service_pb2
 import dfl_service_pb2_grpc
@@ -33,7 +33,7 @@ NODE_ID         = int(os.environ.get("NODE_ID", 1))
 NEIGHBORS       = [n.strip() for n in os.environ.get("NEIGHBORS", "").split(",") if n.strip()]
 DATA_DIR        = os.environ.get("DATA_DIR", "/app/data")
 LOCAL_EPOCHS    = int(os.environ.get("LOCAL_EPOCHS", 5))
-MAX_ROUNDS      = int(os.environ.get("MAX_ROUNDS", 20))
+MAX_ROUNDS      = int(os.environ.get("MAX_ROUNDS", 30))
 NUM_CLASSES     = int(os.environ.get("NUM_CLASSES", 26))
 FINE_TUNE_ROUND = int(os.environ.get("FINE_TUNE_ROUND", 0))
 GOSSIP_INTERVAL = int(os.environ.get("GOSSIP_INTERVAL", 30))
@@ -41,7 +41,7 @@ GOSSIP_INTERVAL = int(os.environ.get("GOSSIP_INTERVAL", 30))
 CHECKPOINT_DIR = f"/app/checkpoints/node{NODE_ID}"
 EXPORT_DIR     = "/app/exported_models"
 GLOBAL_VAL_DIR = os.environ.get("GLOBAL_VAL_DIR", "")
-IMG_SIZE       = (128, 128)
+IMG_SIZE       = (160, 160)    # Bumped from 128×128 — resolves finger details for similar signs
 BATCH_SIZE     = int(os.environ.get("BATCH_SIZE", 8))
 
 # Maximum number of peer weight sets to keep in the buffer at once.
@@ -141,12 +141,12 @@ def make_dataset(directory, shuffle, augment=False, cache=False):
         label_mode="categorical",
         shuffle=shuffle,
     )
-    ds = ds.map(lambda x, y: (tf.cast(x, tf.float32), y), num_parallel_calls=2)
+    ds = ds.map(lambda x, y: (tf.cast(x, tf.float32), y), num_parallel_calls=1)
 
     if cache:
         ds = ds.cache()
     if shuffle:
-        ds = ds.shuffle(buffer_size=200, reshuffle_each_iteration=True)
+        ds = ds.shuffle(buffer_size=500, reshuffle_each_iteration=True)
     if augment:
         ds = ds.map(lambda x, y: (data_augmentation(x, training=True), y),
                     num_parallel_calls=1)
@@ -167,7 +167,7 @@ def load_training_data():
     val_samples   = count_samples_in_dir(val_dir)
 
     train_ds = make_dataset(train_dir, shuffle=True,  augment=True,  cache=False)
-    val_ds   = make_dataset(val_dir,   shuffle=False, augment=False, cache=True)
+    val_ds   = make_dataset(val_dir,   shuffle=False, augment=False, cache=False)
 
     train_ds.samples = train_samples
     val_ds.samples   = val_samples
@@ -181,7 +181,7 @@ def load_global_val():
     if not GLOBAL_VAL_DIR or not os.path.isdir(GLOBAL_VAL_DIR):
         return None
     try:
-        ds = make_dataset(GLOBAL_VAL_DIR, shuffle=False, augment=False, cache=True)
+        ds = make_dataset(GLOBAL_VAL_DIR, shuffle=False, augment=False, cache=False)
         print(f"[Node {NODE_ID}] Global val set loaded.", flush=True)
         return ds
     except Exception as e:
@@ -194,19 +194,20 @@ def load_global_val():
 # ---------------------------------------------------------------------------
 def train_local(model, train_data, val_data, global_val_data, epochs=LOCAL_EPOCHS):
     """
-    Train for up to `epochs` local epochs with early stopping (patience=2).
+    Train for up to `epochs` local epochs with early stopping (patience=3).
 
     Early stopping prevents each node from over-specialising on its own shard
     when val_accuracy stops improving — common after FedAvg merges stabilise
     the weights. restore_best_weights=True ensures the checkpoint always holds
     the best seen weights from this round, not the last epoch's weights.
 
-    Logs both train and val metrics so you can spot train/val divergence
-    (the primary indicator of overfitting in a federated setting).
+    Patience increased from 2 → 3: with batch_size=8 and FedAvg merges
+    disrupting weights each round, patience=2 was too aggressive and would
+    stop training before the model could recover from the merge.
     """
     early_stop = tf.keras.callbacks.EarlyStopping(
         monitor='val_accuracy',
-        patience=2,
+        patience=3,
         restore_best_weights=True,
         verbose=0,
     )
@@ -276,7 +277,7 @@ def apply_fine_tuning(model, num_unfreeze=30):
     )
     model.compile(
         optimizer=Adam(ft_schedule),
-        loss='categorical_crossentropy',
+        loss=tf.keras.losses.CategoricalCrossentropy(label_smoothing=0.1),
         metrics=['accuracy'],
     )
     return model
@@ -419,6 +420,10 @@ def serve():
                     print(f"[Node {NODE_ID}] → gossiped to {target}.", flush=True)
                 except Exception as e:
                     print(f"[Node {NODE_ID}] Gossip failed → {target}: {e}", flush=True)
+
+        # Step 5: Clean up memory
+        import gc
+        gc.collect()
 
     # Training complete
     print(f"\n[Node {NODE_ID}] ===== TRAINING COMPLETE ({MAX_ROUNDS} rounds) =====", flush=True)

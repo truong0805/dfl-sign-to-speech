@@ -11,16 +11,16 @@ services:
       - NODE_ID=1
       - NEIGHBORS=node2,node3,node4,node5
       - LOCAL_EPOCHS=5
-      - GOSSIP_INTERVAL=30
-      - MAX_ROUNDS=20
+      - GOSSIP_INTERVAL=10
+      - MAX_ROUNDS=30
       - NUM_CLASSES=26
+      - MODEL_TYPE=image
       - TF_CPU_ALLOCATOR_USE_BFC=1
-      - TF_BFC_ALLOCATOR_LIMIT_MB=600
+      - TF_BFC_ALLOCATOR_LIMIT_MB=400
       - TF_CPP_MIN_LOG_LEVEL=2
       - TF_ENABLE_ONEDNN_OPTS=0
-      # Set to round 20 (halfway) so the backbone unfreezes for the second half.
-      # Phase 1 (rounds 1-19): head only. Phase 2 (rounds 20-40): top-30 backbone layers.
-      - FINE_TUNE_ROUND=10
+      # Phase 1 (rounds 1-14): head only. Phase 2 (rounds 15-30): top-30 backbone layers.
+      - FINE_TUNE_ROUND=15
       - BATCH_SIZE=8
       - GLOBAL_VAL_DIR=/app/global_val
     mem_limit: 2200m
@@ -38,14 +38,15 @@ services:
       - NODE_ID=2
       - NEIGHBORS=node1,node3,node4,node5
       - LOCAL_EPOCHS=5
-      - GOSSIP_INTERVAL=30
-      - MAX_ROUNDS=20
+      - GOSSIP_INTERVAL=10
+      - MAX_ROUNDS=30
       - NUM_CLASSES=26
+      - MODEL_TYPE=image
       - TF_CPU_ALLOCATOR_USE_BFC=1
-      - TF_BFC_ALLOCATOR_LIMIT_MB=600
+      - TF_BFC_ALLOCATOR_LIMIT_MB=400
       - TF_CPP_MIN_LOG_LEVEL=2
       - TF_ENABLE_ONEDNN_OPTS=0
-      - FINE_TUNE_ROUND=10
+      - FINE_TUNE_ROUND=15
       - BATCH_SIZE=8
       - GLOBAL_VAL_DIR=/app/global_val
     mem_limit: 2200m
@@ -66,14 +67,15 @@ services:
       - NODE_ID=3
       - NEIGHBORS=node1,node2,node4,node5
       - LOCAL_EPOCHS=5
-      - GOSSIP_INTERVAL=30
-      - MAX_ROUNDS=20
+      - GOSSIP_INTERVAL=10
+      - MAX_ROUNDS=30
       - NUM_CLASSES=26
+      - MODEL_TYPE=image
       - TF_CPU_ALLOCATOR_USE_BFC=1
-      - TF_BFC_ALLOCATOR_LIMIT_MB=600
+      - TF_BFC_ALLOCATOR_LIMIT_MB=400
       - TF_CPP_MIN_LOG_LEVEL=2
       - TF_ENABLE_ONEDNN_OPTS=0
-      - FINE_TUNE_ROUND=10
+      - FINE_TUNE_ROUND=15
       - BATCH_SIZE=8
       - GLOBAL_VAL_DIR=/app/global_val
     mem_limit: 2200m
@@ -92,14 +94,15 @@ services:
       - NODE_ID=4
       - NEIGHBORS=node1,node2,node3,node5
       - LOCAL_EPOCHS=5
-      - GOSSIP_INTERVAL=30
-      - MAX_ROUNDS=20
+      - GOSSIP_INTERVAL=10
+      - MAX_ROUNDS=30
       - NUM_CLASSES=26
+      - MODEL_TYPE=image
       - TF_CPU_ALLOCATOR_USE_BFC=1
-      - TF_BFC_ALLOCATOR_LIMIT_MB=600
+      - TF_BFC_ALLOCATOR_LIMIT_MB=400
       - TF_CPP_MIN_LOG_LEVEL=2
       - TF_ENABLE_ONEDNN_OPTS=0
-      - FINE_TUNE_ROUND=10
+      - FINE_TUNE_ROUND=15
       - BATCH_SIZE=8
       - GLOBAL_VAL_DIR=/app/global_val
     mem_limit: 2200m
@@ -118,14 +121,15 @@ services:
       - NODE_ID=5
       - NEIGHBORS=node1,node2,node3,node4
       - LOCAL_EPOCHS=5
-      - GOSSIP_INTERVAL=30
-      - MAX_ROUNDS=20
+      - GOSSIP_INTERVAL=10
+      - MAX_ROUNDS=30
       - NUM_CLASSES=26
+      - MODEL_TYPE=image
       - TF_CPU_ALLOCATOR_USE_BFC=1
-      - TF_BFC_ALLOCATOR_LIMIT_MB=600
+      - TF_BFC_ALLOCATOR_LIMIT_MB=400
       - TF_CPP_MIN_LOG_LEVEL=2
       - TF_ENABLE_ONEDNN_OPTS=0
-      - FINE_TUNE_ROUND=10
+      - FINE_TUNE_ROUND=15
       - BATCH_SIZE=8
       - GLOBAL_VAL_DIR=/app/global_val
     mem_limit: 2200m

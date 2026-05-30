@@ -26,7 +26,7 @@ def build_model(num_classes=26):
     if MODEL_TYPE == "mnist":
         from model_mnist import build_model as _build_mnist_model
         return _build_mnist_model()
-    return _build_image_model(input_shape=(128, 128, 3), num_classes=num_classes)
+    return _build_image_model(input_shape=(160, 160, 3), num_classes=num_classes)
 
 
 def serialize_weights(model) -> bytes:

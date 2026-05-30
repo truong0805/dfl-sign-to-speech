@@ -1,15 +1,19 @@
 """
-model_image.py — Optimized MobileNetV2 backbone for Sign-to-Speech DFL.
+model_image.py — Improved MobileNetV2 backbone for Sign-to-Speech DFL.
 
 CHANGES FROM PREVIOUS VERSION:
-  - Added Dense(256, relu) intermediate layer before final classifier.
-    Gives the head more capacity to separate visually similar ASL signs
-    (e.g. R/U, M/N, S/E) without significantly increasing param count.
-  - Replaced fixed Adam(1e-3) with CosineDecayRestarts schedule.
-    Prevents loss oscillation across FL rounds caused by a constant LR
-    that never settles the weights after each FedAvg merge.
-  - Dropout raised from 0.2 → 0.3 to compensate for the added Dense layer.
-  - fine_tune_model() unchanged — called by node.py at FINE_TUNE_ROUND.
+  - Input resolution bumped from 128×128 → 160×160.
+    56% more pixels resolves finger details for similar signs (M/N, R/U, S/E).
+    MobileNetV2 weight count is resolution-independent — only feature maps grow.
+  - Classification head widened: Dense(256) → Dense(512) + Dense(128).
+    The old 1280→256 compression lost discriminative features; two-layer
+    head gives the classifier more capacity without excessive params.
+  - First dropout raised 0.3 → 0.4 to compensate for the larger head.
+  - Label smoothing (0.1) added to the loss — prevents overconfident
+    predictions on small per-node datasets (typical in FL).
+  - Initial LR reduced from 1e-3 → 5e-4 — wider head benefits from
+    more conservative optimization.
+  - fine_tune_model() unchanged except LR comment updates.
 """
 
 import tensorflow as tf
@@ -18,13 +22,13 @@ from tensorflow.keras.applications import MobileNetV2
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.optimizers.schedules import CosineDecayRestarts
 
-INPUT_SHAPE = (128, 128, 3)
+INPUT_SHAPE = (160, 160, 3)
 
 # One "round" ≈ 4000 images / batch_size=8 = 500 steps, times LOCAL_EPOCHS=5 = 2500 steps.
 # CosineDecayRestarts restarts every first_decay_steps — set to ~1 round of steps.
 # This lets the LR warm-restart after each FedAvg merge, which helps convergence.
 _FIRST_DECAY_STEPS = 2500
-_INITIAL_LR        = 1e-3
+_INITIAL_LR        = 5e-4     # Reduced from 1e-3 — wider head needs gentler LR
 _MIN_LR            = 1e-5
 
 
@@ -44,9 +48,16 @@ def build_model(input_shape=INPUT_SHAPE, num_classes=26):
     """
     Phase 1: MobileNetV2 base fully frozen, train classification head only.
 
-    Head: GAP → BatchNorm → Dense(256, relu) → Dropout(0.3) → Dense(26, softmax)
-    The extra Dense(256) layer gives the classifier capacity to distinguish
-    visually close ASL signs without fine-tuning the backbone.
+    Head architecture (v2):
+        GAP → BatchNorm → Dense(512, relu) → Dropout(0.4)
+            → Dense(128, relu) → Dropout(0.3) → Dense(26, softmax)
+
+    The two-layer head (512 → 128) gives the classifier enough capacity to
+    separate visually similar ASL signs without needing backbone fine-tuning.
+    The old single Dense(256) compressed 1280 GAP features too aggressively.
+
+    Label smoothing (0.1) prevents the model from becoming overconfident
+    on the small per-node datasets typical in federated learning.
 
     Preprocessing: Rescaling [0, 255] → [-1, 1] is inside the graph so the
     data pipeline never needs to do manual normalisation.
@@ -69,9 +80,11 @@ def build_model(input_shape=INPUT_SHAPE, num_classes=26):
     x = layers.GlobalAveragePooling2D(name='gap')(x)
     x = layers.BatchNormalization(name='head_bn')(x)
 
-    # Intermediate layer — helps separate visually similar hand shapes
-    x = layers.Dense(256, activation='relu', name='head_dense')(x)
-    x = layers.Dropout(0.3, name='head_dropout')(x)
+    # Two-layer classification head — wider than v1 for better separation
+    x = layers.Dense(512, activation='relu', name='head_dense1')(x)
+    x = layers.Dropout(0.4, name='head_dropout1')(x)
+    x = layers.Dense(128, activation='relu', name='head_dense2')(x)
+    x = layers.Dropout(0.3, name='head_dropout2')(x)
 
     outputs = layers.Dense(num_classes, activation='softmax', name='predictions')(x)
 
@@ -79,11 +92,11 @@ def build_model(input_shape=INPUT_SHAPE, num_classes=26):
 
     model.compile(
         optimizer=Adam(_make_lr_schedule()),
-        loss='categorical_crossentropy',
+        loss=tf.keras.losses.CategoricalCrossentropy(label_smoothing=0.1),
         metrics=['accuracy'],
     )
 
-    print(f"[build_model] Optimized MobileNetV2 | input={input_shape} | classes={num_classes}")
+    print(f"[build_model] Improved MobileNetV2 | input={input_shape} | classes={num_classes}")
     print(f"[build_model] Total params: {model.count_params():,}")
     return model
 
@@ -92,7 +105,7 @@ def fine_tune_model(model, num_unfreeze=30):
     """
     Phase 2: unfreeze the top `num_unfreeze` layers of the MobileNetV2 backbone.
 
-    Called by node.py when round_num >= FINE_TUNE_ROUND (set to ~20 in docker-compose).
+    Called by node.py when round_num >= FINE_TUNE_ROUND.
 
     Changes from Phase 1:
       - Increased default num_unfreeze from 20 → 30 to expose more domain-specific
@@ -136,7 +149,7 @@ def fine_tune_model(model, num_unfreeze=30):
 
     model.compile(
         optimizer=Adam(ft_schedule),
-        loss='categorical_crossentropy',
+        loss=tf.keras.losses.CategoricalCrossentropy(label_smoothing=0.1),
         metrics=['accuracy'],
     )
     return model

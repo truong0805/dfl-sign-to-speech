@@ -5,12 +5,14 @@ Run this ONCE on the full dataset (before DFL) to get an upper-bound benchmark.
 The resulting val_acc is the ceiling your DFL nodes should approach after enough rounds.
 
 CHANGES FROM PREVIOUS VERSION:
+  - Input resolution updated to 160×160 (was 128×128) to match improved model.
   - Augmentation aligned with node.py (rotation 15%, translation 10%, zoom 15%,
     brightness 20%, contrast 20%). Previously the standalone trainer used different
     augmentation strengths than the nodes — this causes the benchmark to be
     unrepresentative of what the distributed system actually trains on.
-  - Added cosine LR schedule to match model_image.py (was using the old fixed LR).
+  - Cosine LR schedule aligned with model_image.py (5e-4 initial, was 1e-3).
   - Phase 2 fine-tuning now unfreezes 30 layers (was 20) to match node.py.
+  - Label smoothing (0.1) used in both phases, consistent with model_image.py.
 """
 
 import os
@@ -19,10 +21,11 @@ from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
 from model_image import build_model, fine_tune_model
 import json
 
-DATA_DIR   = os.environ.get("IMAGE_DATA_DIR", "resized_dataset")
+TRAIN_DIR  = os.environ.get("TRAIN_DIR", "resized_dataset")
+VAL_DIR    = os.environ.get("VAL_DIR", "global_val")
 AUTOTUNE   = tf.data.AUTOTUNE
-IMG_SIZE   = (128, 128)
-BATCH_SIZE = 32     # safe for standalone training on a 16 GB machine
+IMG_SIZE   = (160, 160)    # Updated from 128×128
+BATCH_SIZE = 32            # safe for standalone training on a 16 GB machine
 
 
 def load_dataset(split_dir, shuffle):
@@ -55,11 +58,8 @@ def augment(image, label):
     return image, label
 
 
-train_dir = os.path.join(DATA_DIR, "train")
-val_dir   = os.path.join(DATA_DIR, "val")
-
-train_ds = load_dataset(train_dir, shuffle=True)
-val_ds   = load_dataset(val_dir,   shuffle=False)
+train_ds = load_dataset(TRAIN_DIR, shuffle=True)
+val_ds   = load_dataset(VAL_DIR,   shuffle=False)
 
 num_classes = len(train_ds.class_names)
 print(f"Classes      : {num_classes}")
