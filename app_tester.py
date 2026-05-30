@@ -18,8 +18,17 @@ import json
 import os
 import time
 import threading
+import mediapipe as mp
 from collections import deque
 from tensorflow.keras.models import load_model
+
+# Initialize MediaPipe Hands for live inference hand-cropping
+mp_hands = mp.solutions.hands
+hands = mp_hands.Hands(
+    static_image_mode=True,
+    max_num_hands=1,
+    min_detection_confidence=0.3
+)
 
 
 # ---------------------------------------------------------------------------
@@ -146,55 +155,146 @@ else:
 # ---------------------------------------------------------------------------
 # Preprocessing
 # ---------------------------------------------------------------------------
-def preprocess_image(cv_bgr: np.ndarray) -> np.ndarray:
+def crop_hand_from_frame(image: np.ndarray) -> np.ndarray:
+    """
+    Detect hand via MediaPipe, crop a square bounding box centered on the hand
+    including margin, clamp to boundaries, and return the BGR crop.
+    Returns None if no hand is detected.
+    """
+    h, w = image.shape[:2]
+
+    # Apply CLAHE on luma channel for better detection under varied lighting
+    yuv = cv2.cvtColor(image, cv2.COLOR_BGR2YUV)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    yuv[:, :, 0] = clahe.apply(yuv[:, :, 0])
+    enhanced = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR)
+
+    # Convert BGR to RGB for MediaPipe processing
+    image_rgb = cv2.cvtColor(enhanced, cv2.COLOR_BGR2RGB)
+    results = hands.process(image_rgb)
+
+    if not results.multi_hand_landmarks:
+        return None
+
+    # Gather coordinates of all detected hand landmarks to compute bounding box
+    x_coords = []
+    y_coords = []
+    for hand_landmarks in results.multi_hand_landmarks:
+        for lm in hand_landmarks.landmark:
+            x_coords.append(int(lm.x * w))
+            y_coords.append(int(lm.y * h))
+
+    x_min, x_max = min(x_coords), max(x_coords)
+    y_min, y_max = min(y_coords), max(y_coords)
+
+    # Calculate bounding box dimensions
+    box_w = x_max - x_min
+    box_h = y_max - y_min
+    box_size = max(box_w, box_h)
+
+    # Determine square crop size including percentage-based margin (15%)
+    margin = int(box_size * 0.15)
+    crop_size = box_size + 2 * margin
+
+    # If crop size exceeds either dimension of the original image, clamp it
+    if crop_size > w or crop_size > h:
+        crop_size = min(w, h)
+
+    # Find center of the bounding box
+    center_x = (x_min + x_max) // 2
+    center_y = (y_min + y_max) // 2
+
+    # Calculate initial crop coordinates
+    x_start = center_x - crop_size // 2
+    x_end = x_start + crop_size
+    y_start = center_y - crop_size // 2
+    y_end = y_start + crop_size
+
+    # Shift crop box if it extends outside the image boundaries
+    if x_start < 0:
+        x_end -= x_start
+        x_start = 0
+    if x_end > w:
+        x_start -= (x_end - w)
+        x_end = w
+        if x_start < 0:
+            x_start = 0
+
+    if y_start < 0:
+        y_end -= y_start
+        y_start = 0
+    if y_end > h:
+        y_start -= (y_end - h)
+        y_end = h
+        if y_start < 0:
+            y_start = 0
+
+    # Extract the cropped region of interest (from the ORIGINAL image)
+    cropped_hand = image[y_start:y_end, x_start:x_end]
+
+    if cropped_hand.size == 0:
+        return None
+
+    # Fallback to guarantee square if sub-pixel rounding mismatch
+    ch, cw = cropped_hand.shape[:2]
+    if ch != cw:
+        size = max(ch, cw)
+        pad_h = (size - ch) // 2
+        pad_w = (size - cw) // 2
+        cropped_hand = cv2.copyMakeBorder(
+            cropped_hand, pad_h, size - ch - pad_h, pad_w, size - cw - pad_w,
+            borderType=cv2.BORDER_CONSTANT, value=[0, 0, 0]
+        )
+    return cropped_hand
+
+
+def preprocess_image(cv_bgr: np.ndarray):
     """
     Prepare a BGR OpenCV image for MobileNetV2 inference.
-
-    MobileNetV2 was built with a Rescaling layer inside the graph that converts
-    [0, 255] → [-1, 1] at runtime. So we must pass float32 values in [0, 255]
-    without dividing by 255 ourselves — the model handles that internally.
-
-    Pipeline:
-      1. Center-square crop  — removes letterbox borders, reduces background noise
-      2. CLAHE on luma       — normalises brightness variation across signers/lighting
-      3. BGR → RGB           — OpenCV is BGR; MobileNetV2 expects RGB
-      4. Resize to 160×160   — matches training resolution
-      5. Cast to float32     — values stay in [0, 255], no division
+    Attempts to crop the hand. Falls back to a center-square crop if no hand is detected.
+    Returns (processed_image, hand_detected)
     """
-    h, w = cv_bgr.shape[:2]
+    cropped = crop_hand_from_frame(cv_bgr)
+    hand_detected = True
+    
+    # Check if hand crop succeeded
+    if cropped is not None:
+        cv_bgr = cropped
+    else:
+        hand_detected = False
+        # Fallback to center crop
+        h, w = cv_bgr.shape[:2]
+        crop = min(h, w)
+        y0 = (h - crop) // 2
+        x0 = (w - crop) // 2
+        cv_bgr = cv_bgr[y0:y0 + crop, x0:x0 + crop]
 
-    # 1. Center-square crop
-    crop = min(h, w)
-    y0 = (h - crop) // 2
-    x0 = (w - crop) // 2
-    cv_bgr = cv_bgr[y0:y0 + crop, x0:x0 + crop]
-
-    # 2. CLAHE on luma channel only (preserves colour, improves contrast)
+    # Apply CLAHE on the selected region
     yuv = cv2.cvtColor(cv_bgr, cv2.COLOR_BGR2YUV)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     yuv[:, :, 0] = clahe.apply(yuv[:, :, 0])
     cv_bgr = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR)
 
-    # 3. BGR → RGB
+    # Convert BGR to RGB
     rgb = cv2.cvtColor(cv_bgr, cv2.COLOR_BGR2RGB)
 
-    # 4. Resize to training resolution (160×160)
+    # Resize cleanly to training resolution (160×160)
     rgb = cv2.resize(rgb, (160, 160), interpolation=cv2.INTER_AREA)
 
-    # 5. Float32 in [0, 255] — MobileNetV2 Rescaling layer handles normalisation
-    return rgb.astype(np.float32)
+    return rgb.astype(np.float32), hand_detected
 
 
 # ---------------------------------------------------------------------------
 # Inference helpers
 # ---------------------------------------------------------------------------
 def run_inference(cv_bgr: np.ndarray):
-    tensor = np.expand_dims(preprocess_image(cv_bgr), axis=0)
+    processed, hand_detected = preprocess_image(cv_bgr)
+    tensor = np.expand_dims(processed, axis=0)
     probs  = model.predict(tensor, verbose=0)[0]
     idx    = int(np.argmax(probs))
     conf   = float(probs[idx])
     letter = class_map.get(str(idx), "?")
-    return letter, conf, probs
+    return letter, conf, probs, processed, hand_detected
 
 
 def smoothed_prediction(letter: str, conf: float):
@@ -271,13 +371,23 @@ with col_pred:
         if cv_img is None:
             st.error("Could not decode image — try another file.")
         else:
-            letter, conf, probs = run_inference(cv_img)
+            letter, conf, probs, processed_rgb, hand_detected = run_inference(cv_img)
 
             if is_live:
                 letter, conf = smoothed_prediction(letter, conf)
 
             low_conf = conf < CONFIDENCE_THRESHOLD
             render_prediction(letter, conf, low_conf)
+
+            # Show warning if hand is not detected
+            if not hand_detected:
+                st.warning("⚠️ No hand detected in frame. Falling back to center-crop (position hand in center).")
+            else:
+                st.success("✅ Hand detected and cropped.")
+
+            # Show a visual preview of what the model actually sees (the cropped hand)
+            with st.expander("Show processed input (hand crop)", expanded=True):
+                st.image(processed_rgb.astype(np.uint8), caption="160x160 Model Input", use_container_width=True)
 
             # Log and speak only when a new confident letter appears
             if not low_conf and letter != st.session_state.last_spoken:
