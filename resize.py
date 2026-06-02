@@ -2,10 +2,39 @@ from PIL import Image
 import os
 import shutil
 
+
+def pad_and_resize(img: Image.Image, size=(160, 160)) -> Image.Image:
+    """
+    Pad image to square with black letterbox borders, then resize.
+
+    Why this matters:
+        The ASL training images are NOT square — each sign has a different
+        natural aspect ratio (e.g. 'H' is very wide at ~2:1, 'B' is tall
+        at ~1:2). A naive img.resize(160, 160) squashes/stretches each class
+        differently, baking a unique per-class distortion into the training data.
+        The model then learns to use that distortion as a class cue, which means
+        it fails on real camera images (which always show natural proportions).
+
+        This function pads the shorter dimension with black pixels first so the
+        hand shape is preserved, matching what the model will see at inference.
+    """
+    w, h = img.size
+    max_dim = max(w, h)
+    # Create a square black canvas and paste the original image centered
+    square = Image.new("RGB", (max_dim, max_dim), (0, 0, 0))
+    paste_x = (max_dim - w) // 2
+    paste_y = (max_dim - h) // 2
+    square.paste(img, (paste_x, paste_y))
+    return square.resize(size, Image.LANCZOS)
+
+
 def resize_dataset_folder(input_dir, output_dir, size=(160, 160)):
     """
     Resize all images in input_dir to `size` and save to output_dir,
     preserving the class subfolder structure.
+
+    Uses pad_and_resize() instead of a direct resize to preserve hand
+    aspect ratios across all ASL sign classes.
     """
     if os.path.exists(output_dir):
         print(f"Wiping existing directory: {output_dir}")
@@ -37,7 +66,7 @@ def resize_dataset_folder(input_dir, output_dir, size=(160, 160)):
 
             try:
                 img = Image.open(img_path).convert("RGB")
-                img = img.resize(size, Image.LANCZOS)
+                img = pad_and_resize(img, size)  # aspect-ratio-safe resize
 
                 save_path = os.path.join(target_class_path, img_name)
                 img.save(save_path)

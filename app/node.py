@@ -114,19 +114,35 @@ def count_samples_in_dir(directory):
     return total
 
 
-# Augmentation tuned for ASL hand-sign variation:
-#   - Rotation ±15°  : hands naturally tilt between signers
-#   - Translation 10%: hand position varies across frames
-#   - Zoom 15%       : different distances from camera
-#   - Brightness 20% : varied lighting environments
-#   - Contrast 20%   : skin tone and background variation
-#   - Horizontal flip DISABLED: ASL is NOT mirror-symmetric (e.g. J, Z)
+# Augmentation targeting the three real gaps between studio training data
+# and live webcam input:
+#
+#   - Zoom (-0.35, +0.10)  : zoom-out up to 35%, zoom-in up to 10%.
+#                             Simulates the hand being further from the webcam.
+#                             Training data is close-up studio shots; live webcam
+#                             has the hand as a smaller fraction of the frame.
+#                             fill_mode='constant', fill_value=127: exposed border
+#                             filled with neutral grey, matching training backgrounds.
+#   - Brightness ±35%      : webcam auto-exposure creates wider brightness swings
+#                             than controlled studio lighting.
+#   - Contrast ±35%        : flat indoor lighting vs outdoor/studio light.
+#
+#   Deliberately removed:
+#   - RandomRotation       : camera is fixed; rotation doesn't close any real
+#                             domain gap and risks confusing orientation-sensitive
+#                             signs (e.g. D vs G, U vs H).
+#   - RandomTranslation    : MediaPipe already centres the hand in the crop,
+#                             so translation variation is handled by detection,
+#                             not by the classifier.
+#   - Horizontal flip      : ASL is NOT mirror-symmetric (e.g. J, Z, G, H).
 data_augmentation = tf.keras.Sequential([
-    tf.keras.layers.RandomRotation(0.15),
-    tf.keras.layers.RandomTranslation(0.10, 0.10),
-    tf.keras.layers.RandomZoom(0.15),
-    tf.keras.layers.RandomBrightness(0.20),
-    tf.keras.layers.RandomContrast(0.20),
+    tf.keras.layers.RandomZoom(
+        (-0.35, 0.10),
+        fill_mode='constant',
+        fill_value=127,           # neutral grey — matches plain-wall training backgrounds
+    ),
+    tf.keras.layers.RandomBrightness(0.35),
+    tf.keras.layers.RandomContrast(0.35),
 ], name='augmentation')
 
 
