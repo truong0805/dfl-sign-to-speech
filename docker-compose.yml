@@ -15,7 +15,10 @@ services:
       - NUM_CLASSES=26
     deploy:
       resources:
+        limits:
+          memory: 8G
         reservations:
+          memory: 3G
           devices:
             - driver: nvidia
               count: 1
@@ -36,7 +39,10 @@ services:
       - NUM_CLASSES=26
     deploy:
       resources:
+        limits:
+          memory: 8G
         reservations:
+          memory: 3G
           devices:
             - driver: nvidia
               count: 1
@@ -57,7 +63,10 @@ services:
       - NUM_CLASSES=26
     deploy:
       resources:
+        limits:
+          memory: 8G
         reservations:
+          memory: 3G
           devices:
             - driver: nvidia
               count: 1
@@ -78,7 +87,10 @@ services:
       - NUM_CLASSES=26
     deploy:
       resources:
+        limits:
+          memory: 8G
         reservations:
+          memory: 3G
           devices:
             - driver: nvidia
               count: 1
@@ -99,7 +111,10 @@ services:
       - NUM_CLASSES=26
     deploy:
       resources:
+        limits:
+          memory: 8G
         reservations:
+          memory: 3G
           devices:
             - driver: nvidia
               count: 1
