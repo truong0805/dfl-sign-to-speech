@@ -545,6 +545,10 @@ with col_pred:
             low_conf = conf < CONFIDENCE_THRESHOLD
             render_prediction(letter, conf, low_conf)
 
+            # Button to read the detected letter out loud
+            if st.button("🔊 Sounds", use_container_width=True):
+                speak_letter(letter)
+
             # Show warning if hand is not detected
             if not hand_detected:
                 st.warning("⚠️ No hand detected in frame. Falling back to center-crop (position hand in center).")

@@ -3,13 +3,12 @@ syntax = "proto3";
 package dfl;
 
 service DFLService {
-  // A node sends its local model weights to a peer
   rpc GossipWeights (WeightRequest) returns (WeightResponse);
 }
 
 message WeightRequest {
   int32 node_id = 1;
-  bytes model_data = 2; // This will hold the PyTorch weights (serialized NumPy array)
+  bytes model_data = 2;
   int32 sample_count = 3;
 }
 
